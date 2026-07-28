@@ -3,7 +3,11 @@
  */
 
 import type { ContextFile } from "../../prompt-construction/context-files.js"
-import { buildCoreGuidelinesSections } from "../../prompt-construction/system-prompt.js"
+import {
+	buildCoreGuidelinesSections,
+	buildOutputAndTruncationSection,
+	buildToolSelectionSection,
+} from "../../prompt-construction/system-prompt.js"
 import type { AgentConfig, EnvInfo } from "../personas/types.js"
 
 /** Budget limits communicated to the agent so it can plan its work. */
@@ -74,7 +78,15 @@ Platform: ${env.platform}`
 	const toolGuidance = buildToolGuidance(extras?.activeToolNames)
 
 	if (config.promptMode === "append") {
-		const identity = stripAvailableToolsSection(parentSystemPrompt || genericBase)
+		const activeToolNames = extras?.activeToolNames
+		const parentPrompt = parentSystemPrompt || genericBase
+		const identity = activeToolNames
+			? stripInheritedContextSections(parentPrompt)
+			: stripAvailableToolsSection(parentPrompt)
+		const toolNames = activeToolNames ? new Set(uniqueToolNames(activeToolNames)) : undefined
+		const localToolSections = toolNames
+			? [buildOutputAndTruncationSection(toolNames), buildToolSelectionSection(toolNames)].filter(Boolean).join("\n\n")
+			: ""
 
 		const bridge = `<sub_agent_context>
 You are operating as a sub-agent invoked to handle a specific task.
@@ -90,8 +102,9 @@ ${toolGuidance}
 			? `\n\n<agent_instructions>\n${config.systemPrompt}\n</agent_instructions>`
 			: ""
 
+		const guidanceSection = localToolSections ? `\n\n${localToolSections}` : ""
 		const toolSection = availableToolsBlock ? `\n\n${availableToolsBlock}` : ""
-		return `${envBlock}\n\n<inherited_system_prompt>\n${identity}\n</inherited_system_prompt>${toolSection}\n\n${bridge}${customSection}${extrasSuffix}`
+		return `${envBlock}\n\n<inherited_system_prompt>\n${identity}\n</inherited_system_prompt>${guidanceSection}${toolSection}\n\n${bridge}${customSection}${extrasSuffix}`
 	}
 
 	// "replace" mode — env header + the config's full system prompt
@@ -101,7 +114,9 @@ You have been invoked to handle a specific task autonomously.
 ${envBlock}`
 
 	const toolSection = availableToolsBlock ? `\n\n${availableToolsBlock}` : ""
-	const coreGuidelines = config.includeCoreGuidelines ? `\n\n${buildCoreGuidelinesSections()}` : ""
+	const coreGuidelines = config.includeCoreGuidelines
+		? `\n\n${buildCoreGuidelinesSections(extras?.activeToolNames)}`
+		: ""
 	return `${replaceHeader}${toolSection}\n\n${config.systemPrompt}${coreGuidelines}${extrasSuffix}`
 }
 
@@ -154,6 +169,14 @@ function uniqueToolNames(toolNames?: string[]): string[] {
 function stripAvailableToolsSection(prompt: string): string {
 	return prompt
 		.replace(/(^|\n)## Available Tools\b[^\n]*\n[\s\S]*?(?=\n#+ |\n*$)/g, "$1")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim()
+}
+
+function stripInheritedContextSections(prompt: string): string {
+	return prompt
+		.replace(/(^|\n)## Phase Management\b[^\n]*\n[\s\S]*?(?=\n#{1,2} |\n*$)/g, "$1")
+		.replace(/(^|\n)## (?:Available Tools|Output & Truncation|Tool Selection)\b[^\n]*\n[\s\S]*?(?=\n#+ |\n*$)/g, "$1")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim()
 }
