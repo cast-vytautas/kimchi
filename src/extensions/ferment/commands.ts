@@ -782,7 +782,6 @@ export class FermentCommandController {
 				ctx.ui.notify("No active ferment to resume.")
 				return { handled: true }
 			}
-
 			if (active.status !== "paused") {
 				const canContinue = active.status === "running" || active.status === "planned"
 				const message = canContinue

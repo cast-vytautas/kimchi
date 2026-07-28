@@ -3,7 +3,7 @@ import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
 import { formatActionNudgeLine } from "./action-tool-names.js"
 import { clearLifecycleGuard } from "./lifecycle-obligation-guard.js"
-import { appendRefEntry } from "./nudge.js"
+import { appendRefEntry, resetScopingStopNudgeCount } from "./nudge.js"
 import { loadPendingProposal } from "./pending-proposal-store.js"
 import { triggerPendingPlanReview } from "./plan-review-trigger.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
@@ -174,6 +174,9 @@ export function resumeFerment(
 	)
 
 	if (existing.status !== "paused") {
+		// Renew draft-scoping recovery only once resume has passed every
+		// blocking check and will actually schedule another model turn.
+		resetScopingStopNudgeCount(existing.id)
 		safeSendMessage(
 			pi,
 			{
