@@ -55,6 +55,7 @@ import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
+import multitaskingExtension from "./extensions/multitasking/index.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
@@ -474,7 +475,7 @@ try {
 		})
 		// Terminal chrome extensions need an actual TUI, not just an extension UI protocol.
 		const terminalUiExtensionFactories = isTerminalUiMode(rawArgs, terminalIo)
-			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension]
+			? [terminalColorsExtension, kimchiMinimalTintsExtension, uiExtension, multitaskingExtension]
 			: []
 		const effectiveSkillPaths = [...new Set([...skillPaths, ...getActiveVendorSkillPaths()])]
 		const extensionFactories = [
