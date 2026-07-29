@@ -231,7 +231,7 @@ describe("kimchi mcp probe", () => {
 
 	// --- OAuth flow: auth fails, returns needsAuth: true ------------------
 
-	it("returns needsAuth: true when OAuth flow fails", async () => {
+	it("returns needsAuth: true with error message when OAuth flow fails", async () => {
 		mockSupportsOAuth.mockReturnValue(true)
 		mockAuthenticate.mockRejectedValue(new Error("user denied"))
 
@@ -245,12 +245,27 @@ describe("kimchi mcp probe", () => {
 		expect(code).toBe(0)
 		expect(mockAuthenticate).toHaveBeenCalledTimes(1)
 		expect(mockProbeTools).toHaveBeenCalledTimes(1)
-		expect(out.json).toEqual({ tools: [], needsAuth: true, error: null })
+		expect(out.json).toEqual({ tools: [], needsAuth: true, error: "user denied" })
+	})
+
+	it("returns needsAuth: true with real error when OAuth fails with port-in-use message", async () => {
+		mockSupportsOAuth.mockReturnValue(true)
+		const oauthError = "port 19876 is held by another process"
+		mockAuthenticate.mockRejectedValue(new Error(oauthError))
+		mockProbeTools.mockResolvedValueOnce({ tools: [], needsAuth: true })
+
+		mockStdin(probeInput(OAUTH_SERVER))
+		const out = captureStdout()
+
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(0)
+		expect(out.json.needsAuth).toBe(true)
+		expect(out.json.error).toContain(oauthError)
 	})
 
 	// --- OAuth flow: auth times out, returns needsAuth: true --------------
 
-	it("returns needsAuth: true when OAuth flow times out", async () => {
+	it("returns needsAuth: true with timeout message when OAuth flow times out", async () => {
 		vi.useFakeTimers()
 		try {
 			mockSupportsOAuth.mockReturnValue(true)
@@ -267,7 +282,30 @@ describe("kimchi mcp probe", () => {
 			const code = await probePromise
 
 			expect(code).toBe(0)
-			expect(out.json).toEqual({ tools: [], needsAuth: true, error: null })
+			expect(out.json).toEqual({ tools: [], needsAuth: true, error: "OAuth flow timed out" })
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("returns exit code 1 when non-OAuth server times out", async () => {
+		vi.useFakeTimers()
+		try {
+			mockSupportsOAuth.mockReturnValue(false)
+			// probeTools never resolves — simulates server hanging
+			mockProbeTools.mockReturnValue(new Promise(() => {}))
+
+			mockStdin(probeInput(STDIO_SERVER))
+			const out = captureStdout()
+
+			const probePromise = runMcp(["probe", "--json"])
+			// Advance past the 15s non-OAuth timeout
+			await vi.advanceTimersByTimeAsync(15_000)
+			const code = await probePromise
+
+			expect(code).toBe(1)
+			expect(out.json.needsAuth).toBe(false)
+			expect(out.json.error).toContain("timed out")
 		} finally {
 			vi.useRealTimers()
 		}

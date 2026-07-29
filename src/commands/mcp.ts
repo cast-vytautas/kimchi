@@ -98,9 +98,12 @@ async function runProbe(args: string[]): Promise<number> {
 		if (result.needsAuth && isOAuthCapable && definition.url) {
 			try {
 				await withTimeout(authenticate(name, definition.url, definition), timeoutMs, "OAuth flow timed out")
-			} catch {
-				// Auth failed or timed out — return needsAuth: true, no retry.
-				return await emitResult({ tools: [], needsAuth: true, error: null })
+			} catch (err) {
+				// Auth failed or timed out — return needsAuth: true with the real
+				// error message so the UI can display it. Exit 0 because the probe
+				// ran successfully; the user just needs to authorize.
+				const message = err instanceof Error ? err.message : String(err)
+				return await emitResult({ tools: [], needsAuth: true, error: message }, 0)
 			}
 
 			// Retry probe after successful auth, reusing the same name so the
@@ -117,7 +120,7 @@ async function runProbe(args: string[]): Promise<number> {
 			needsAuth: result.needsAuth,
 			error: null,
 		}
-		return await emitResult(output)
+		return await emitResult(output, 0)
 	} catch (err) {
 		return await emitError(err instanceof Error ? err.message : String(err), null)
 	} finally {
@@ -165,22 +168,25 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 	})
 }
 
-function emitResult(result: ProbeResult): Promise<number> {
+function emitResult(result: ProbeResult, exitCode: number): Promise<number> {
 	return new Promise<number>((resolve, reject) => {
 		process.stdout.write(`${JSON.stringify(result, null, 2)}\n`, (err) => {
 			if (err) {
 				reject(err)
 			} else {
-				resolve(result.error === null ? 0 : 1)
+				resolve(exitCode)
 			}
 		})
 	})
 }
 
 function emitError(message: string, err: unknown): Promise<number> {
-	return emitResult({
-		tools: [],
-		needsAuth: false,
-		error: message + (err instanceof Error ? `: ${err.message}` : ""),
-	})
+	return emitResult(
+		{
+			tools: [],
+			needsAuth: false,
+			error: message + (err instanceof Error ? `: ${err.message}` : ""),
+		},
+		1,
+	)
 }
