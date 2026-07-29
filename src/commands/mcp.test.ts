@@ -47,6 +47,19 @@ function mockStdin(data: string): void {
 	})
 }
 
+/** Emit stdin data but never emit 'end' — simulates a parent that opens the
+ * pipe without closing it, so readStdin would hang without the timeout. */
+function mockStdinOpen(data: string): void {
+	const stdin = process.stdin as unknown as {
+		setEncoding: (enc: string) => void
+		emit: (event: string, ...args: unknown[]) => boolean
+	}
+	process.nextTick(() => {
+		stdin.emit("data", data)
+		// Intentionally do NOT emit 'end'.
+	})
+}
+
 /** Read and parse the JSON written to stdout. */
 function captureStdout(): { data: string; json: Record<string, unknown> } {
 	const writes: string[] = []
@@ -132,6 +145,55 @@ describe("kimchi mcp probe", () => {
 		mockStdin(JSON.stringify({ server: STDIO_SERVER }))
 		const code = await runMcp(["probe", "--json"])
 		expect(code).toBe(1)
+	})
+
+	// --- readStdin guards: TTY, timeout, size cap --------------------------
+
+	it("returns 1 when stdin is a TTY", async () => {
+		// Simulate an interactive launch with no piped input.
+		Object.defineProperty(process.stdin, "isTTY", {
+			value: true,
+			configurable: true,
+			writable: true,
+		})
+		const out = captureStdout()
+		try {
+			const code = await runMcp(["probe", "--json"])
+			expect(code).toBe(1)
+			expect(out.json.error).toContain("No input on stdin")
+		} finally {
+			// Restore the non-TTY default so subsequent tests see no piped TTY.
+			;(process.stdin as { isTTY?: boolean }).isTTY = undefined
+		}
+	})
+
+	it("returns 1 when stdin input times out", async () => {
+		vi.useFakeTimers()
+		try {
+			// Emit data but never 'end' — readStdin would hang without the timeout.
+			mockStdinOpen(probeInput(STDIO_SERVER))
+			const out = captureStdout()
+
+			const probePromise = runMcp(["probe", "--json"])
+			await vi.advanceTimersByTimeAsync(5000)
+			const code = await probePromise
+
+			expect(code).toBe(1)
+			expect(out.json.error).toContain("Timed out after 5000ms")
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("returns 1 when stdin input exceeds 1MB", async () => {
+		// Build a payload larger than 1MB. The first chunk alone crosses the cap.
+		const big = JSON.stringify({ name: SERVER_NAME, server: STDIO_SERVER, padding: "x".repeat(1_050_000) })
+		mockStdinOpen(big)
+		const out = captureStdout()
+
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+		expect(out.json.error).toContain("stdin input exceeded 1MB")
 	})
 
 	// --- successful stdio probe -------------------------------------------

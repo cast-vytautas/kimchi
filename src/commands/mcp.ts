@@ -129,10 +129,26 @@ async function runProbe(args: string[]): Promise<number> {
 }
 
 function readStdin(): Promise<string> {
+	const STDIN_TIMEOUT_MS = 5000
+	const STDIN_MAX_BYTES = 1024 * 1024 // 1 MB
+
 	return new Promise((resolve, reject) => {
+		// If stdin is a TTY, there is no piped input — reject immediately so the
+		// process never blocks waiting for data that will never arrive.
+		if (process.stdin.isTTY) {
+			reject(new Error("No input on stdin — pipe a server config in"))
+			return
+		}
+
 		let data = ""
+		let timer: ReturnType<typeof setTimeout> | undefined
+
 		const onData = (chunk: string) => {
 			data += chunk
+			if (Buffer.byteLength(data, "utf8") > STDIN_MAX_BYTES) {
+				cleanup()
+				reject(new Error("stdin input exceeded 1MB"))
+			}
 		}
 		const onEnd = () => {
 			cleanup()
@@ -143,10 +159,18 @@ function readStdin(): Promise<string> {
 			reject(err)
 		}
 		const cleanup = () => {
+			if (timer) clearTimeout(timer)
 			process.stdin.off("data", onData)
 			process.stdin.off("end", onEnd)
 			process.stdin.off("error", onError)
 		}
+
+		// Guard against a parent that opens the pipe but never closes it — the
+		// timeout rejects so the probe cannot hang forever.
+		timer = setTimeout(() => {
+			cleanup()
+			reject(new Error("Timed out after 5000ms waiting for stdin"))
+		}, STDIN_TIMEOUT_MS)
 
 		process.stdin.setEncoding("utf8")
 		process.stdin.on("data", onData)
