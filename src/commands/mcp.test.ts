@@ -64,9 +64,18 @@ function captureStdout(): { data: string; json: Record<string, unknown> } {
 	}
 }
 
+const SERVER_NAME = "my-server"
 const STDIO_SERVER = { command: "node", args: ["server.js"] }
 const URL_SERVER = { url: "https://example.com/mcp" }
 const OAUTH_SERVER = { url: "https://example.com/mcp", auth: "oauth" as const }
+
+/** Wrap a server entry in the { name, server } stdin contract. */
+function probeInput(
+	server: typeof STDIO_SERVER | typeof URL_SERVER | typeof OAUTH_SERVER | Record<string, unknown>,
+	name = SERVER_NAME,
+): string {
+	return JSON.stringify({ name, server })
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -102,7 +111,13 @@ describe("kimchi mcp probe", () => {
 	})
 
 	it("returns 1 when server config has neither command nor url", async () => {
-		mockStdin(JSON.stringify({}))
+		mockStdin(probeInput({}))
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+	})
+
+	it("returns 1 when input is missing the 'name' field", async () => {
+		mockStdin(JSON.stringify({ server: STDIO_SERVER }))
 		const code = await runMcp(["probe", "--json"])
 		expect(code).toBe(1)
 	})
@@ -117,7 +132,7 @@ describe("kimchi mcp probe", () => {
 			],
 			needsAuth: false,
 		})
-		mockStdin(JSON.stringify(STDIO_SERVER))
+		mockStdin(probeInput(STDIO_SERVER))
 		const out = captureStdout()
 
 		const code = await runMcp(["probe", "--json"])
@@ -131,6 +146,7 @@ describe("kimchi mcp probe", () => {
 			error: null,
 		})
 		expect(mockProbeTools).toHaveBeenCalledTimes(1)
+		expect(mockProbeTools).toHaveBeenCalledWith(STDIO_SERVER, SERVER_NAME)
 		expect(mockCloseAll).toHaveBeenCalledTimes(1)
 	})
 
@@ -139,7 +155,7 @@ describe("kimchi mcp probe", () => {
 	it("returns needsAuth: true when server needs auth but OAuth is not supported", async () => {
 		mockProbeTools.mockResolvedValue({ tools: [], needsAuth: true })
 		mockSupportsOAuth.mockReturnValue(false)
-		mockStdin(JSON.stringify(URL_SERVER))
+		mockStdin(probeInput(URL_SERVER))
 		const out = captureStdout()
 
 		const code = await runMcp(["probe", "--json"])
@@ -159,18 +175,41 @@ describe("kimchi mcp probe", () => {
 			.mockResolvedValueOnce({ tools: [], needsAuth: true })
 			.mockResolvedValueOnce({ tools: [{ name: "secure_tool" }], needsAuth: false })
 
-		mockStdin(JSON.stringify(OAUTH_SERVER))
+		mockStdin(probeInput(OAUTH_SERVER))
 		const out = captureStdout()
 
 		const code = await runMcp(["probe", "--json"])
 		expect(code).toBe(0)
 		expect(mockAuthenticate).toHaveBeenCalledTimes(1)
-		expect(mockAuthenticate).toHaveBeenCalledWith(
-			expect.stringMatching(/^__probe_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
-			OAUTH_SERVER.url,
-			OAUTH_SERVER,
-		)
+		expect(mockAuthenticate).toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER.url, OAUTH_SERVER)
 		expect(mockProbeTools).toHaveBeenCalledTimes(2)
+		expect(mockProbeTools).toHaveBeenNthCalledWith(1, OAUTH_SERVER, SERVER_NAME)
+		expect(mockProbeTools).toHaveBeenNthCalledWith(2, OAUTH_SERVER, SERVER_NAME)
+		expect(out.json).toEqual({
+			tools: [{ name: "secure_tool", title: undefined, description: undefined }],
+			needsAuth: false,
+			error: null,
+		})
+	})
+
+	// --- repeat probe: tokens already exist, OAuth is skipped -------------
+
+	it("skips OAuth when the first probe returns tools (tokens already exist)", async () => {
+		mockSupportsOAuth.mockReturnValue(true)
+		// First probe returns tools directly — stored tokens were found.
+		mockProbeTools.mockResolvedValue({
+			tools: [{ name: "secure_tool" }],
+			needsAuth: false,
+		})
+
+		mockStdin(probeInput(OAUTH_SERVER))
+		const out = captureStdout()
+
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(0)
+		expect(mockProbeTools).toHaveBeenCalledTimes(1)
+		expect(mockProbeTools).toHaveBeenCalledWith(OAUTH_SERVER, SERVER_NAME)
+		expect(mockAuthenticate).not.toHaveBeenCalled()
 		expect(out.json).toEqual({
 			tools: [{ name: "secure_tool", title: undefined, description: undefined }],
 			needsAuth: false,
@@ -187,7 +226,7 @@ describe("kimchi mcp probe", () => {
 		// Auth fails immediately — no retry probe should happen.
 		mockProbeTools.mockResolvedValueOnce({ tools: [], needsAuth: true })
 
-		mockStdin(JSON.stringify(OAUTH_SERVER))
+		mockStdin(probeInput(OAUTH_SERVER))
 		const out = captureStdout()
 
 		const code = await runMcp(["probe", "--json"])
@@ -207,7 +246,7 @@ describe("kimchi mcp probe", () => {
 			mockAuthenticate.mockReturnValue(new Promise(() => {}))
 			mockProbeTools.mockResolvedValueOnce({ tools: [], needsAuth: true })
 
-			mockStdin(JSON.stringify(OAUTH_SERVER))
+			mockStdin(probeInput(OAUTH_SERVER))
 			const out = captureStdout()
 
 			const probePromise = runMcp(["probe", "--json"])
@@ -226,7 +265,7 @@ describe("kimchi mcp probe", () => {
 
 	it("returns exit code 1 with error JSON when probe throws", async () => {
 		mockProbeTools.mockRejectedValue(new Error("connection refused"))
-		mockStdin(JSON.stringify(STDIO_SERVER))
+		mockStdin(probeInput(STDIO_SERVER))
 		const out = captureStdout()
 
 		const code = await runMcp(["probe", "--json"])
@@ -252,7 +291,7 @@ describe("kimchi mcp probe", () => {
 
 	it("always calls closeAll in the finally block", async () => {
 		mockProbeTools.mockRejectedValue(new Error("boom"))
-		mockStdin(JSON.stringify(STDIO_SERVER))
+		mockStdin(probeInput(STDIO_SERVER))
 
 		await runMcp(["probe", "--json"])
 		expect(mockCloseAll).toHaveBeenCalledTimes(1)

@@ -1,19 +1,24 @@
 /**
  * `kimchi mcp probe` — transient MCP server tool discovery.
  *
- * Reads a {@link ServerEntry} JSON from stdin, connects to the server
- * using a throwaway {@link McpServerManager} connection, calls
- * `tools/list`, prints the result as JSON to stdout, and exits.
+ * Reads a `{ name: string, server: ServerEntry }` JSON from stdin,
+ * connects to the server using a throwaway {@link McpServerManager}
+ * connection, calls `tools/list`, prints the result as JSON to stdout,
+ * and exits.
+ *
+ * The `name` field is passed to both `probeTools` calls and to
+ * `authenticate` so that a repeat probe of an already-authorized
+ * server finds stored OAuth tokens and skips the browser flow.
  *
  * Used by Kimchi Desktop's MCP server configuration UI to populate a
  * multiselect dropdown of available tools when the user picks
  * "Expose selected tools".
  *
  * Usage:  kimchi mcp probe --json < server-config.json
+ * Input:  { "name": "my-server", "server": { "command": "..." } }
  * Output: { "tools": [{ "name": "..." }], "needsAuth": false }
  * Exit:   0 on success (including needs-auth), 1 on error
  */
-import { randomUUID } from "node:crypto"
 import { authenticate, supportsOAuth } from "../extensions/mcp-adapter/mcp-auth-flow.js"
 import { McpServerManager } from "../extensions/mcp-adapter/server-manager.js"
 import type { McpTool, ServerEntry } from "../extensions/mcp-adapter/types.js"
@@ -55,11 +60,18 @@ async function runProbe(args: string[]): Promise<number> {
 		return emitError("Failed to read stdin", err)
 	}
 
+	let name: string
 	let definition: ServerEntry
 	try {
-		definition = JSON.parse(input) as ServerEntry
+		const parsed = JSON.parse(input) as { name: string; server: ServerEntry }
+		name = parsed.name
+		definition = parsed.server
 	} catch (err) {
 		return emitError("Failed to parse JSON from stdin", err)
+	}
+
+	if (!name) {
+		return emitError("Input must include a 'name' field", null)
 	}
 
 	if (!definition.command && !definition.url) {
@@ -76,24 +88,25 @@ async function runProbe(args: string[]): Promise<number> {
 
 	const manager = new McpServerManager()
 	try {
-		let result = await withTimeout(manager.probeTools(definition), timeoutMs, timeoutMsg)
+		// Pass the real server name so the token store (keyed by server name)
+		// is shared between the initial probe, authenticate(), and the retry.
+		// A repeat probe of an already-authorized server will find stored
+		// OAuth tokens on the first call and skip the browser flow entirely.
+		let result = await withTimeout(manager.probeTools(definition, name), timeoutMs, timeoutMsg)
 
 		// If the server needs auth and OAuth is supported, attempt the full
 		// OAuth flow (browser redirect + callback) then retry the probe.
-		// Use a stable probe name so the OAuth token store (keyed by server
-		// name) is shared between authenticate() and the retry probe.
 		if (result.needsAuth && isOAuthCapable && definition.url) {
-			const probeName = `__probe_${randomUUID()}`
 			try {
-				await withTimeout(authenticate(probeName, definition.url, definition), timeoutMs, "OAuth flow timed out")
+				await withTimeout(authenticate(name, definition.url, definition), timeoutMs, "OAuth flow timed out")
 			} catch {
 				// Auth failed or timed out — return needsAuth: true, no retry.
 				return emitResult({ tools: [], needsAuth: true, error: null })
 			}
 
-			// Retry probe after successful auth, reusing the same probe name
-			// so the token store has the credentials.
-			result = await withTimeout(manager.probeTools(definition, probeName), timeoutMs, timeoutMsg)
+			// Retry probe after successful auth, reusing the same name so the
+			// token store has the credentials.
+			result = await withTimeout(manager.probeTools(definition, name), timeoutMs, timeoutMsg)
 		}
 
 		const output: ProbeResult = {
