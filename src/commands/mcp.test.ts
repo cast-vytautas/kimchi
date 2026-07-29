@@ -103,11 +103,11 @@ describe("kimchi mcp probe", () => {
 		expect(stderrSpy).toHaveBeenCalled()
 	})
 
-	it("returns 1 when --json flag is missing", async () => {
-		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+	it("returns 1 and emits JSON error on stdout when --json flag is missing", async () => {
+		const out = captureStdout()
 		const code = await runMcp(["probe"])
 		expect(code).toBe(1)
-		expect(stderrSpy.mock.calls.flat().join("")).toContain("--json")
+		expect(out.json.error).toContain("--json")
 	})
 
 	it("returns 1 when server config has neither command nor url", async () => {

@@ -48,8 +48,7 @@ async function runProbe(args: string[]): Promise<number> {
 	const json = args.includes("--json")
 
 	if (!json) {
-		process.stderr.write("Error: --json flag is required\n")
-		return 1
+		return emitError("--json flag is required", null)
 	}
 
 	// Read server config from stdin
