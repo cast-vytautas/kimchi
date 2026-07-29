@@ -154,7 +154,8 @@ function getSubcommand(args: string[]): string {
 	const sub = args[0]
 	if (!sub || sub.startsWith("-")) return "harness"
 	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp"].includes(sub)) return sub
-	// "mcp" is also handled by dispatchSubcommand via the command registry,
+	// "mcp" is handled here so it doesn't enter the harness mode; the actual
+	// subcommand logic is dispatched via the command registry in dispatchSubcommand.
 	return "harness"
 }
 

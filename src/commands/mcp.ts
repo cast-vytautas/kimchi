@@ -13,6 +13,7 @@
  * Output: { "tools": [{ "name": "..." }], "needsAuth": false }
  * Exit:   0 on success (including needs-auth), 1 on error
  */
+import { randomUUID } from "node:crypto"
 import { authenticate, supportsOAuth } from "../extensions/mcp-adapter/mcp-auth-flow.js"
 import { McpServerManager } from "../extensions/mcp-adapter/server-manager.js"
 import type { McpTool, ServerEntry } from "../extensions/mcp-adapter/types.js"
@@ -79,8 +80,10 @@ async function runProbe(args: string[]): Promise<number> {
 
 		// If the server needs auth and OAuth is supported, attempt the full
 		// OAuth flow (browser redirect + callback) then retry the probe.
+		// Use a stable probe name so the OAuth token store (keyed by server
+		// name) is shared between authenticate() and the retry probe.
 		if (result.needsAuth && isOAuthCapable && definition.url) {
-			const probeName = `__probe_${Date.now()}`
+			const probeName = `__probe_${randomUUID()}`
 			try {
 				await withTimeout(authenticate(probeName, definition.url, definition), timeoutMs, "OAuth flow timed out")
 			} catch {
@@ -88,8 +91,9 @@ async function runProbe(args: string[]): Promise<number> {
 				return emitResult({ tools: [], needsAuth: true, error: null })
 			}
 
-			// Retry probe after successful auth.
-			result = await withTimeout(manager.probeTools(definition), timeoutMs, timeoutMsg)
+			// Retry probe after successful auth, reusing the same probe name
+			// so the token store has the credentials.
+			result = await withTimeout(manager.probeTools(definition, probeName), timeoutMs, timeoutMsg)
 		}
 
 		const output: ProbeResult = {
@@ -112,12 +116,27 @@ async function runProbe(args: string[]): Promise<number> {
 function readStdin(): Promise<string> {
 	return new Promise((resolve, reject) => {
 		let data = ""
-		process.stdin.setEncoding("utf8")
-		process.stdin.on("data", (chunk) => {
+		const onData = (chunk: string) => {
 			data += chunk
-		})
-		process.stdin.on("end", () => resolve(data))
-		process.stdin.on("error", reject)
+		}
+		const onEnd = () => {
+			cleanup()
+			resolve(data)
+		}
+		const onError = (err: Error) => {
+			cleanup()
+			reject(err)
+		}
+		const cleanup = () => {
+			process.stdin.off("data", onData)
+			process.stdin.off("end", onEnd)
+			process.stdin.off("error", onError)
+		}
+
+		process.stdin.setEncoding("utf8")
+		process.stdin.on("data", onData)
+		process.stdin.on("end", onEnd)
+		process.stdin.on("error", onError)
 	})
 }
 
@@ -126,6 +145,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 	const timerPromise = new Promise<never>((_, reject) => {
 		timer = setTimeout(() => reject(new Error(message)), ms)
 	})
+	// Attach a no-op catch to the original promise so that if it rejects
+	// after the timer wins the race, the rejection is not unhandled.
+	promise.catch(() => {})
 	return Promise.race([promise, timerPromise]).finally(() => {
 		if (timer) clearTimeout(timer)
 	})

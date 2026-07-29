@@ -166,7 +166,7 @@ describe("kimchi mcp probe", () => {
 		expect(code).toBe(0)
 		expect(mockAuthenticate).toHaveBeenCalledTimes(1)
 		expect(mockAuthenticate).toHaveBeenCalledWith(
-			expect.stringMatching(/^__probe_\d+$/),
+			expect.stringMatching(/^__probe_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
 			OAUTH_SERVER.url,
 			OAUTH_SERVER,
 		)
