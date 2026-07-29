@@ -312,36 +312,31 @@ describe("kimchi mcp probe", () => {
 	// --- stdout flush ------------------------------------------------------
 
 	it("awaits the stdout write callback before resolving (large payload >64KB is not truncated)", async () => {
-		// A payload larger than the ~64KB pipe buffer: backpressure could cause
-		// process.exit() to fire before the write drains if emitResult didn't
-		// wait for the write callback. Here we verify the promise only resolves
-		// after the callback fires and that the full payload is captured.
-		const bigDescription = "x".repeat(80_000)
-		mockProbeTools.mockResolvedValue({
-			tools: [{ name: "big_tool", description: bigDescription }],
-			needsAuth: false,
-		})
-
-		let writeCallbackCalled = false
-		vi.spyOn(process.stdout, "write").mockImplementation(
-			(
-				_chunk: string | Uint8Array,
-				encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
-				cb?: (err?: Error | null) => void,
-			) => {
-				process.nextTick(() => {
-					writeCallbackCalled = true
-					const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb
-					callback?.(null)
-				})
-				return true
-			},
-		)
+		// Generate a payload well above the ~64KB pipe buffer: 5000 tool objects
+		// with long names. If emitResult didn't await the write callback, a
+		// subsequent process.exit() could truncate the output mid-stream.
+		const bigTools = Array.from({ length: 5000 }, (_, i) => ({
+			name: `tool_${String(i).padStart(6, "0")}_${"x".repeat(30)}`,
+			description: "y".repeat(30),
+		}))
+		mockProbeTools.mockResolvedValue({ tools: bigTools, needsAuth: false })
 
 		mockStdin(probeInput(STDIO_SERVER))
+		const out = captureStdout()
 		const code = await runMcp(["probe", "--json"])
 
 		expect(code).toBe(0)
-		expect(writeCallbackCalled).toBe(true)
+		// Parse the captured stdout and verify the full payload survived.
+		const parsed = out.json as {
+			tools: Array<{ name: string; description: string }>
+			needsAuth: boolean
+			error: string | null
+		}
+		expect(parsed.tools).toHaveLength(5000)
+		expect(parsed.tools[0].name).toBe(bigTools[0].name)
+		expect(parsed.tools[4999].name).toBe(bigTools[4999].name)
+		expect(parsed.tools[4999].description).toBe(bigTools[4999].description)
+		expect(parsed.needsAuth).toBe(false)
+		expect(parsed.error).toBeNull()
 	})
 })
