@@ -153,7 +153,8 @@ function getSubcommand(args: string[]): string {
 	if (args.includes("--help") || args.includes("-h")) return "help"
 	const sub = args[0]
 	if (!sub || sub.startsWith("-")) return "harness"
-	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry"].includes(sub)) return sub
+	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp"].includes(sub)) return sub
+	// "mcp" is also handled by dispatchSubcommand via the command registry,
 	return "harness"
 }
 

@@ -324,6 +324,35 @@ export class McpServerManager {
 		if (connection.inFlight > 0) return false
 		return Date.now() - connection.lastUsedAt > timeoutMs
 	}
+
+	/**
+	 * Probe a server definition: connect transiently, list tools, disconnect.
+	 *
+	 * Unlike {@link connect}, this does NOT cache the connection — it is
+	 * intended for one-shot discovery from the Desktop UI ("which tools
+	 * does this server expose?") before the server is saved to config.
+	 *
+	 * Returns the raw tool list from `tools/list`. On auth failure,
+	 * returns an empty list with `needsAuth: true` so the caller can
+	 * surface an appropriate message.
+	 */
+	async probeTools(definition: ServerDefinition): Promise<{
+		tools: McpTool[]
+		needsAuth: boolean
+	}> {
+		// Reuse the existing connection machinery by creating a temporary
+		// connection under a probe-only name, then closing it immediately.
+		const probeName = `__probe_${Date.now()}`
+		try {
+			const connection = await this.connect(probeName, definition)
+			if (connection.status === "needs-auth") {
+				return { tools: [], needsAuth: true }
+			}
+			return { tools: connection.tools, needsAuth: false }
+		} finally {
+			await this.close(probeName).catch(() => {})
+		}
+	}
 }
 
 /**
