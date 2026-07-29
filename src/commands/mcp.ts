@@ -48,7 +48,7 @@ async function runProbe(args: string[]): Promise<number> {
 	const json = args.includes("--json")
 
 	if (!json) {
-		return emitError("--json flag is required", null)
+		return await emitError("--json flag is required", null)
 	}
 
 	// Read server config from stdin
@@ -56,7 +56,7 @@ async function runProbe(args: string[]): Promise<number> {
 	try {
 		input = await readStdin()
 	} catch (err) {
-		return emitError("Failed to read stdin", err)
+		return await emitError("Failed to read stdin", err)
 	}
 
 	let name: string
@@ -66,15 +66,15 @@ async function runProbe(args: string[]): Promise<number> {
 		name = parsed.name
 		definition = parsed.server
 	} catch (err) {
-		return emitError("Failed to parse JSON from stdin", err)
+		return await emitError("Failed to parse JSON from stdin", err)
 	}
 
 	if (!name) {
-		return emitError("Input must include a 'name' field", null)
+		return await emitError("Input must include a 'name' field", null)
 	}
 
 	if (!definition.command && !definition.url) {
-		return emitError("Server config must have either 'command' or 'url'", null)
+		return await emitError("Server config must have either 'command' or 'url'", null)
 	}
 
 	// Non-OAuth servers: 15 second timeout.
@@ -100,7 +100,7 @@ async function runProbe(args: string[]): Promise<number> {
 				await withTimeout(authenticate(name, definition.url, definition), timeoutMs, "OAuth flow timed out")
 			} catch {
 				// Auth failed or timed out — return needsAuth: true, no retry.
-				return emitResult({ tools: [], needsAuth: true, error: null })
+				return await emitResult({ tools: [], needsAuth: true, error: null })
 			}
 
 			// Retry probe after successful auth, reusing the same name so the
@@ -117,9 +117,9 @@ async function runProbe(args: string[]): Promise<number> {
 			needsAuth: result.needsAuth,
 			error: null,
 		}
-		return emitResult(output)
+		return await emitResult(output)
 	} catch (err) {
-		return emitError(err instanceof Error ? err.message : String(err), null)
+		return await emitError(err instanceof Error ? err.message : String(err), null)
 	} finally {
 		await manager.closeAll().catch(() => {})
 	}
@@ -165,12 +165,19 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 	})
 }
 
-function emitResult(result: ProbeResult): number {
-	process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
-	return result.error === null ? 0 : 1
+function emitResult(result: ProbeResult): Promise<number> {
+	return new Promise<number>((resolve, reject) => {
+		process.stdout.write(`${JSON.stringify(result, null, 2)}\n`, (err) => {
+			if (err) {
+				reject(err)
+			} else {
+				resolve(result.error === null ? 0 : 1)
+			}
+		})
+	})
 }
 
-function emitError(message: string, err: unknown): number {
+function emitError(message: string, err: unknown): Promise<number> {
 	return emitResult({
 		tools: [],
 		needsAuth: false,

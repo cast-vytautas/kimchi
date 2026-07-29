@@ -50,10 +50,22 @@ function mockStdin(data: string): void {
 /** Read and parse the JSON written to stdout. */
 function captureStdout(): { data: string; json: Record<string, unknown> } {
 	const writes: string[] = []
-	vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
-		writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
-		return true
-	})
+	vi.spyOn(process.stdout, "write").mockImplementation(
+		// process.stdout.write is overloaded: (chunk, cb?) or (chunk, encoding?, cb?).
+		// Accept both shapes so the mock satisfies the union type.
+		(
+			chunk: string | Uint8Array,
+			encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+			cb?: (err?: Error | null) => void,
+		) => {
+			writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+			const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb
+			// Node's write callback is asynchronous — defer it so the emitResult
+			// promise that awaits it resolves on the next tick, mirroring real I/O.
+			if (callback) process.nextTick(() => callback(null))
+			return true
+		},
+	)
 	return {
 		get data() {
 			return writes.join("")
@@ -295,5 +307,41 @@ describe("kimchi mcp probe", () => {
 
 		await runMcp(["probe", "--json"])
 		expect(mockCloseAll).toHaveBeenCalledTimes(1)
+	})
+
+	// --- stdout flush ------------------------------------------------------
+
+	it("awaits the stdout write callback before resolving (large payload >64KB is not truncated)", async () => {
+		// A payload larger than the ~64KB pipe buffer: backpressure could cause
+		// process.exit() to fire before the write drains if emitResult didn't
+		// wait for the write callback. Here we verify the promise only resolves
+		// after the callback fires and that the full payload is captured.
+		const bigDescription = "x".repeat(80_000)
+		mockProbeTools.mockResolvedValue({
+			tools: [{ name: "big_tool", description: bigDescription }],
+			needsAuth: false,
+		})
+
+		let writeCallbackCalled = false
+		vi.spyOn(process.stdout, "write").mockImplementation(
+			(
+				_chunk: string | Uint8Array,
+				encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+				cb?: (err?: Error | null) => void,
+			) => {
+				process.nextTick(() => {
+					writeCallbackCalled = true
+					const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb
+					callback?.(null)
+				})
+				return true
+			},
+		)
+
+		mockStdin(probeInput(STDIO_SERVER))
+		const code = await runMcp(["probe", "--json"])
+
+		expect(code).toBe(0)
+		expect(writeCallbackCalled).toBe(true)
 	})
 })
