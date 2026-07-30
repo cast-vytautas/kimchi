@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
@@ -323,6 +324,40 @@ export class McpServerManager {
 		if (connection?.status !== "connected") return false
 		if (connection.inFlight > 0) return false
 		return Date.now() - connection.lastUsedAt > timeoutMs
+	}
+
+	/**
+	 * Probe a server definition: connect transiently, list tools, disconnect.
+	 *
+	 * Unlike {@link connect}, this does NOT cache the connection — it is
+	 * intended for one-shot discovery from the Desktop UI ("which tools
+	 * does this server expose?") before the server is saved to config.
+	 *
+	 * Returns the raw tool list from `tools/list`. On auth failure,
+	 * returns an empty list with `needsAuth: true` so the caller can
+	 * surface an appropriate message.
+	 */
+	async probeTools(
+		definition: ServerDefinition,
+		probeName?: string,
+	): Promise<{
+		tools: McpTool[]
+		needsAuth: boolean
+	}> {
+		// Reuse the existing connection machinery by creating a temporary
+		// connection under a probe-only name, then closing it immediately.
+		// Use a randomUUID to guarantee uniqueness even under fake timers
+		// or rapid successive calls.
+		const name = probeName ?? `__probe_${randomUUID()}`
+		try {
+			const connection = await this.connect(name, definition)
+			if (connection.status === "needs-auth") {
+				return { tools: [], needsAuth: true }
+			}
+			return { tools: connection.tools, needsAuth: false }
+		} finally {
+			await this.close(name).catch(() => {})
+		}
 	}
 }
 

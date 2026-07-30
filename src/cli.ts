@@ -153,7 +153,15 @@ function getSubcommand(args: string[]): string {
 	if (args.includes("--help") || args.includes("-h")) return "help"
 	const sub = args[0]
 	if (!sub || sub.startsWith("-")) return "harness"
-	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry"].includes(sub)) return sub
+	// Telemetry allowlist: names reported as the `subcommand` label in the
+	// app_started event (getSubcommand's only consumer, below). This is NOT a
+	// dispatch table — dispatch happens independently in dispatchSubcommand()
+	// via the command registry. The list intentionally includes labels that are
+	// not registry commands (logout, doctor, skills, telemetry) so those
+	// invocations report their own label instead of the generic "harness"; `mcp`
+	// appears here for the same telemetry-accuracy reason even though it is also
+	// a registered command.
+	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp"].includes(sub)) return sub
 	return "harness"
 }
 
