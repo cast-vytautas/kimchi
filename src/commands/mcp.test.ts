@@ -135,16 +135,131 @@ describe("kimchi mcp probe", () => {
 		expect(out.json.error).toContain("--json")
 	})
 
-	it("returns 1 when server config has neither command nor url", async () => {
+	// --- TypeBox schema validation ------------------------------------------
+
+	it("returns 1 when server config has neither command nor url (semantic check remains)", async () => {
 		mockStdin(probeInput({}))
+		const out = captureStdout()
 		const code = await runMcp(["probe", "--json"])
 		expect(code).toBe(1)
+		expect(out.json.error).toContain("Server config must have either 'command' or 'url'")
 	})
 
-	it("returns 1 when input is missing the 'name' field", async () => {
-		mockStdin(JSON.stringify({ server: STDIO_SERVER }))
+	it("returns 1 with JSON error when server is missing", async () => {
+		mockStdin(JSON.stringify({ name: SERVER_NAME }))
+		const out = captureStdout()
 		const code = await runMcp(["probe", "--json"])
 		expect(code).toBe(1)
+		expect(out.json.error).toContain("Invalid probe input")
+		expect(out.json.error).toContain("server")
+	})
+
+	it("returns 1 with JSON error when server is null", async () => {
+		mockStdin(JSON.stringify({ name: SERVER_NAME, server: null }))
+		const out = captureStdout()
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+		expect(out.json.error).toContain("Invalid probe input")
+		expect(out.json.error).toContain("object")
+	})
+
+	it("returns 1 with JSON error when server is wrong type (string)", async () => {
+		mockStdin(JSON.stringify({ name: SERVER_NAME, server: "not-an-object" }))
+		const out = captureStdout()
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+		expect(out.json.error).toContain("Invalid probe input")
+		expect(out.json.error).toContain("object")
+	})
+
+	it("returns 1 with JSON error when name is missing", async () => {
+		mockStdin(JSON.stringify({ server: STDIO_SERVER }))
+		const out = captureStdout()
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+		expect(out.json.error).toContain("Invalid probe input")
+		expect(out.json.error).toContain("name")
+	})
+
+	it("returns 1 with JSON error when name is empty", async () => {
+		mockStdin(probeInput(STDIO_SERVER, ""))
+		const out = captureStdout()
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+		expect(out.json.error).toContain("Invalid probe input")
+	})
+
+	it("returns 1 when name contains path separator /", async () => {
+		mockStdin(probeInput(STDIO_SERVER, "foo/bar"))
+		const out = captureStdout()
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+		expect(out.json.error).toContain("Invalid probe input")
+	})
+
+	it("returns 1 when name contains path separator backslash", async () => {
+		mockStdin(probeInput(STDIO_SERVER, "foo\\bar"))
+		const out = captureStdout()
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+		expect(out.json.error).toContain("Invalid probe input")
+	})
+
+	it("returns 1 when name is .. (path traversal)", async () => {
+		mockStdin(probeInput(STDIO_SERVER, ".."))
+		const out = captureStdout()
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+		expect(out.json.error).toContain("Invalid probe input")
+	})
+
+	it("returns 1 when name contains consecutive dots (foo..bar)", async () => {
+		mockStdin(probeInput(STDIO_SERVER, "foo..bar"))
+		const out = captureStdout()
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+		expect(out.json.error).toContain("Invalid probe input")
+	})
+
+	it("accepts name with single dots (github.com)", async () => {
+		mockProbeTools.mockResolvedValue({ tools: [], needsAuth: false })
+		mockStdin(probeInput(STDIO_SERVER, "github.com"))
+		const out = captureStdout()
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(0)
+		expect(out.json.error).toBeNull()
+		expect(mockProbeTools).toHaveBeenCalledWith(STDIO_SERVER, "github.com")
+	})
+
+	it("returns 1 when unknown top-level properties are present", async () => {
+		mockStdin(JSON.stringify({ name: SERVER_NAME, server: STDIO_SERVER, extra: true }))
+		const out = captureStdout()
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+		expect(out.json.error).toContain("Invalid probe input")
+	})
+
+	it("accepts server with additionalProperties (full ServerEntry shape)", async () => {
+		const fullServer = { command: "npx", args: ["-y", "server.js"], env: { FOO: "bar" }, cwd: "/tmp", debug: true }
+		mockProbeTools.mockResolvedValue({ tools: [], needsAuth: false })
+		mockStdin(probeInput(fullServer))
+		const out = captureStdout()
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(0)
+		expect(out.json.error).toBeNull()
+	})
+
+	it("returns exit code 1 with JSON error for all validation failures", async () => {
+		// Verify error envelope shape for a validation failure
+		mockStdin(JSON.stringify({ name: SERVER_NAME, server: null }))
+		const out = captureStdout()
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(1)
+		expect(out.json).toEqual({
+			tools: [],
+			needsAuth: false,
+			error: expect.stringContaining("Invalid probe input"),
+		})
 	})
 
 	// --- readStdin guards: TTY, timeout, size cap --------------------------

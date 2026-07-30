@@ -19,6 +19,9 @@
  * Output: { "tools": [{ "name": "..." }], "needsAuth": false }
  * Exit:   0 on success (including needs-auth), 1 on error
  */
+
+import { Type } from "typebox"
+import { Value } from "typebox/value"
 import { authenticate, supportsOAuth } from "../extensions/mcp-adapter/mcp-auth-flow.js"
 import { McpServerManager } from "../extensions/mcp-adapter/server-manager.js"
 import type { McpTool, ServerEntry } from "../extensions/mcp-adapter/types.js"
@@ -30,6 +33,27 @@ interface ProbeResult {
 	needsAuth: boolean
 	error: string | null
 }
+
+/**
+ * TypeBox schema for the probe stdin input.
+ *
+ * Validates the `{ name, server }` wrapper structurally:
+ * - `name` must be a non-empty string with no path separators (`/`, `\`)
+ *   or consecutive dots (`..`) — prevents path-traversal attacks.
+ * - `server` accepts the full `ServerEntry` shape with `additionalProperties: true`
+ *   since it is a rich config object.
+ * - Top-level rejects unknown properties (`additionalProperties: false`).
+ */
+const ProbeInputSchema = Type.Object(
+	{
+		name: Type.String({
+			minLength: 1,
+			pattern: "^(?!.*\\.\\.)[^/\\\\]+$",
+		}),
+		server: Type.Object({}, { additionalProperties: true }),
+	},
+	{ additionalProperties: false },
+)
 
 export async function runMcp(args: string[]): Promise<number | undefined> {
 	const subcommand = args[0]
@@ -59,19 +83,24 @@ async function runProbe(args: string[]): Promise<number> {
 		return await emitError("Failed to read stdin", err)
 	}
 
-	let name: string
-	let definition: ServerEntry
+	let parsed: unknown
 	try {
-		const parsed = JSON.parse(input) as { name: string; server: ServerEntry }
-		name = parsed.name
-		definition = parsed.server
+		parsed = JSON.parse(input)
 	} catch (err) {
 		return await emitError("Failed to parse JSON from stdin", err)
 	}
 
-	if (!name) {
-		return await emitError("Input must include a 'name' field", null)
+	if (!Value.Check(ProbeInputSchema, parsed)) {
+		const errors = Value.Errors(ProbeInputSchema, parsed)
+		const first = errors[0]
+		const fieldPath =
+			first.instancePath || `/${(first.params as { requiredProperties?: string[] })?.requiredProperties?.[0] ?? ""}`
+		return await emitError(`Invalid probe input: ${fieldPath} ${first.message}`, null)
 	}
+
+	const validated = parsed as { name: string; server: ServerEntry }
+	const name = validated.name
+	const definition = validated.server
 
 	if (!definition.command && !definition.url) {
 		return await emitError("Server config must have either 'command' or 'url'", null)
