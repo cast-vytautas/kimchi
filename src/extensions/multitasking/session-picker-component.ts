@@ -3,6 +3,7 @@ import { type Component, Key, matchesKey, truncateToWidth } from "@earendil-work
 import {
 	initialPickerState,
 	type PickerEffect,
+	type PickerEvent,
 	type PickerState,
 	pickerReducer,
 	type SessionInfo,
@@ -10,14 +11,34 @@ import {
 
 // ─── Key mapping ─────────────────────────────────────────────────────────────
 
-export type PickerKeyEvent = "key-up" | "key-down" | "key-enter" | "key-escape" | "key-left" | undefined
-
-export function keyToPickerEvent(data: string): PickerKeyEvent {
-	if (matchesKey(data, Key.up)) return "key-up"
-	if (matchesKey(data, Key.down)) return "key-down"
-	if (matchesKey(data, Key.enter)) return "key-enter"
-	if (matchesKey(data, Key.escape)) return "key-escape"
-	if (matchesKey(data, Key.left)) return "key-left"
+/**
+ * Maps raw terminal input to a picker event.
+ * Returns a `PickerEvent` (including `key-text` and `key-backspace`) or
+ * `undefined` if the input doesn't map to any picker action.
+ */
+export function keyToPickerEvent(data: string): PickerEvent | undefined {
+	if (matchesKey(data, Key.up)) return { type: "key-up" }
+	if (matchesKey(data, Key.down)) return { type: "key-down" }
+	if (matchesKey(data, Key.enter)) return { type: "key-enter" }
+	if (matchesKey(data, Key.escape)) return { type: "key-escape" }
+	if (matchesKey(data, Key.left)) return { type: "key-escape" } // left arrow dismisses
+	if (matchesKey(data, Key.backspace)) return { type: "key-backspace" }
+	// Printable characters: single-char strings that aren't control sequences
+	if (data.length === 1 && data >= " " && data <= "~") {
+		return { type: "key-text", text: data }
+	}
+	// Multi-byte printable (e.g. unicode): accept if no escape prefix or carriage return
+	if (data.length > 1 && !data.startsWith("\x1b") && !data.startsWith("\r")) {
+		// Check all chars are printable (no control chars)
+		if (
+			[...data].every((ch) => {
+				const code = ch.codePointAt(0)
+				return code !== undefined && code >= 0x20 && code !== 0x7f
+			})
+		) {
+			return { type: "key-text", text: data }
+		}
+	}
 	return undefined
 }
 
@@ -43,7 +64,6 @@ function truncateText(text: string, maxWidth: number): string {
 export function renderPickerLines(state: PickerState, theme: Theme, width: number): string[] {
 	const lines: string[] = []
 	const add = (line = "") => lines.push(truncateToWidth(line, width, ""))
-	const innerWidth = Math.max(1, width - 2)
 	const indent = "  "
 
 	add("")
@@ -56,8 +76,6 @@ export function renderPickerLines(state: PickerState, theme: Theme, width: numbe
 
 	if (state.sessions.length === 0) {
 		add(`${indent}${theme.fg("dim", "No sessions found.")}`)
-		add("")
-		return lines
 	}
 
 	for (let i = 0; i < state.sessions.length; i++) {
@@ -79,9 +97,28 @@ export function renderPickerLines(state: PickerState, theme: Theme, width: numbe
 		add(`${indent}${markerStr}${label}${meta}`)
 
 		if (isHighlighted && session.firstMessage) {
-			const preview = theme.fg("dim", truncateText(session.firstMessage, innerWidth - 4))
+			const preview = theme.fg("dim", truncateText(session.firstMessage, width - 4))
 			add(`${indent}  ${preview}`)
 		}
+	}
+
+	// "New session" entry at the bottom of the list
+	const newSessionIndex = state.sessions.length
+	const isNewSessionHighlighted = state.highlightIndex === newSessionIndex
+	const newSessionMarker = isNewSessionHighlighted ? "›" : " "
+	const newSessionMarkerColor = isNewSessionHighlighted ? "accent" : "dim"
+	const newSessionLabel = isNewSessionHighlighted ? theme.fg("accent", "New session") : theme.fg("dim", "New session")
+	const newSessionMarkerStr = theme.fg(newSessionMarkerColor, `${newSessionMarker} `)
+	add(`${indent}${newSessionMarkerStr}${newSessionLabel}`)
+
+	// New-session input line — shows typed text with a cursor
+	const inputPrompt = theme.fg("dim", "  › ")
+	const cursor = theme.fg("accent", "▏")
+	if (state.newSessionInput.length > 0) {
+		const inputText = theme.fg("text", state.newSessionInput)
+		add(`${inputPrompt}${inputText}${cursor}`)
+	} else {
+		add(`${inputPrompt}${cursor}`)
 	}
 
 	add("")
@@ -127,13 +164,7 @@ export class SessionPickerComponent implements Component {
 		const event = keyToPickerEvent(data)
 		if (!event) return
 
-		// Left arrow also dismisses (toggle behaviour)
-		if (event === "key-left") {
-			this.onEffect({ type: "dismiss" })
-			return
-		}
-
-		const result = pickerReducer(this.state, { type: event })
+		const result = pickerReducer(this.state, event)
 		this.state = result.state
 		this.onStateChange?.(this.state)
 

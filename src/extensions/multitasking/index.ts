@@ -129,6 +129,30 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 				closePicker()
 				break
 			}
+			case "new-session": {
+				const { text } = effect
+				closePicker()
+				if (commandCtx) {
+					const ctx = commandCtx
+					ctx
+						.newSession()
+						.then(({ cancelled }) => {
+							if (cancelled) return
+							if (text.length > 0) {
+								pi.sendUserMessage(text)
+							}
+						})
+						.catch((err: unknown) => {
+							currentCtx?.ui.notify(
+								`Could not create new session: ${err instanceof Error ? err.message : String(err)}`,
+								"warning",
+							)
+						})
+				} else if (currentCtx) {
+					currentCtx.ui.notify("New session creation is not available in this context.", "warning")
+				}
+				break
+			}
 			case "none":
 				break
 		}

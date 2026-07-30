@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { claimRawInputCapture } from "../shared-input.js"
 import { multitaskingExtension } from "./index.js"
@@ -6,6 +6,9 @@ import { multitaskingExtension } from "./index.js"
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
 const LEFT_ARROW = "\x1b[D"
+const UP_ARROW = "\x1b[A"
+const DOWN_ARROW = "\x1b[B"
+const ENTER = "\r"
 
 type InputHandler = (data: string) => { consume?: boolean } | undefined
 
@@ -28,6 +31,12 @@ interface Fixture {
 	setEditorComponent: ReturnType<typeof vi.fn>
 	/** Build a fresh ExtensionContext reading the fixture's controls live. */
 	makeCtx: () => ExtensionContext
+	/** Mock for commandCtx.newSession */
+	newSessionMock: ReturnType<typeof vi.fn>
+	/** Mock for pi.sendUserMessage */
+	sendUserMessageMock: ReturnType<typeof vi.fn>
+	/** Invoke the /sessions command to capture a command context. */
+	invokeSessionsCommand: () => Promise<void>
 }
 
 function makeFixture(): Fixture {
@@ -46,8 +55,15 @@ function makeFixture(): Fixture {
 	// them. Instead, the picker uniquely swaps the editor via setEditorComponent,
 	// so we treat an editor swap as the unambiguous "picker opened" signal.
 	let editorSwapped = false
-	const setEditorComponent = vi.fn(() => {
-		editorSwapped = true
+	const setEditorComponent = vi.fn((factory: unknown) => {
+		// The extension calls setEditorComponent(() => NO_OP_EDITOR) to swap,
+		// and setEditorComponent(prevEditorFactory) to restore.
+		// A function factory means the picker is active; undefined means restored.
+		if (typeof factory === "function") {
+			editorSwapped = true
+		} else {
+			editorSwapped = false
+		}
 	})
 
 	// Tracks how many times the picker widget factory (vs. the shim) was mounted,
@@ -61,6 +77,9 @@ function makeFixture(): Fixture {
 		requestRender: () => {},
 	}
 
+	const newSessionMock = vi.fn().mockResolvedValue({ cancelled: false })
+	const sendUserMessageMock = vi.fn()
+
 	const api = {
 		on: vi.fn((event: string, handler: (event: unknown, ctx: ExtensionContext) => void) => {
 			eventHandlers[event] = handler
@@ -68,6 +87,7 @@ function makeFixture(): Fixture {
 		registerCommand: vi.fn((name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
 			commands.set(name, options.handler)
 		}),
+		sendUserMessage: sendUserMessageMock,
 	} as unknown as ExtensionAPI
 
 	multitaskingExtension(api)
@@ -97,7 +117,7 @@ function makeFixture(): Fixture {
 			ui: {
 				// Mounting a widget factory invokes it with (tui, theme) so the
 				// extension captures the tui ref — mirroring how pi mounts widgets.
-				setWidget: vi.fn((key: string, content: unknown) => {
+				setWidget: vi.fn((_key: string, content: unknown) => {
 					if (content === undefined) return
 					if (typeof content === "function") {
 						// Distinguish the picker factory from the shim: only the picker
@@ -121,17 +141,29 @@ function makeFixture(): Fixture {
 			},
 		}) as unknown as ExtensionContext
 
+	const invokeSessionsCommand = async () => {
+		const handler = commands.get("sessions")
+		if (!handler) throw new Error("sessions command not registered")
+		// Build a command context that includes newSession
+		const cmdCtx = {
+			...makeCtx(),
+			newSession: newSessionMock,
+		} as unknown as ExtensionCommandContext
+		await handler("", cmdCtx)
+	}
+
 	return {
 		api,
-		sessionStart: (ctx: ExtensionContext) => eventHandlers["session_start"]?.({ type: "session_start" }, ctx),
+		sessionStart: (ctx: ExtensionContext) => eventHandlers.session_start?.({ type: "session_start" }, ctx),
 		terminalInput: () => terminalInput,
 		commands,
 		controls,
-		// The picker is "open" if its factory was mounted at least once AND the
-		// editor was swapped to the no-op editor.
 		pickerOpen: () => pickerFactoryMounts > 0 && editorSwapped,
 		setEditorComponent,
 		makeCtx,
+		newSessionMock,
+		sendUserMessageMock,
+		invokeSessionsCommand,
 	}
 }
 
@@ -226,6 +258,93 @@ describe("multitaskingExtension lifecycle", () => {
 		const result = handler("a")
 
 		expect(result).toBeUndefined()
+		expect(f.pickerOpen()).toBe(false)
+	})
+})
+
+// ─── Typing & new-session tests ──────────────────────────────────────────────
+
+describe("typing and new session creation", () => {
+	it("typing does not interfere with session list navigation (arrow keys still work)", () => {
+		const f = makeFixture()
+		const handler = start(f)
+
+		// Open the picker
+		handler(LEFT_ARROW)
+		expect(f.pickerOpen()).toBe(true)
+
+		// Type some text
+		handler("h")
+		handler("i")
+
+		// Navigate with arrow keys — should still work and consume input
+		const downResult = handler(DOWN_ARROW)
+		expect(downResult).toEqual({ consume: true })
+		const upResult = handler(UP_ARROW)
+		expect(upResult).toEqual({ consume: true })
+
+		// Picker should still be open
+		expect(f.pickerOpen()).toBe(true)
+	})
+
+	it("creates a new session with the typed message when Enter is pressed", async () => {
+		const f = makeFixture()
+		const handler = start(f)
+
+		// Capture command context via /sessions command
+		await f.invokeSessionsCommand()
+		expect(f.pickerOpen()).toBe(true)
+
+		// Type a message
+		handler("f")
+		handler("i")
+		handler("x")
+
+		// Press Enter
+		handler(ENTER)
+
+		// Wait for microtasks (newSession is async)
+		await vi.waitFor(() => {
+			expect(f.newSessionMock).toHaveBeenCalledTimes(1)
+		})
+
+		// sendUserMessage should be called with the typed text
+		expect(f.sendUserMessageMock).toHaveBeenCalledTimes(1)
+		expect(f.sendUserMessageMock).toHaveBeenCalledWith("fix")
+	})
+
+	it("creates a new session without sending a message when text is empty", async () => {
+		const f = makeFixture()
+		const handler = start(f)
+
+		await f.invokeSessionsCommand()
+		expect(f.pickerOpen()).toBe(true)
+
+		// Navigate to "New session" entry (bottom of list).
+		// With no sessions loaded (loading state), the only entry is "New session" at index 0.
+		// Press Enter without typing anything
+		handler(ENTER)
+
+		await vi.waitFor(() => {
+			expect(f.newSessionMock).toHaveBeenCalledTimes(1)
+		})
+
+		// sendUserMessage should NOT be called (empty text)
+		expect(f.sendUserMessageMock).not.toHaveBeenCalled()
+	})
+
+	it("picker is dismissed after creating a new session", async () => {
+		const f = makeFixture()
+		const handler = start(f)
+
+		await f.invokeSessionsCommand()
+		expect(f.pickerOpen()).toBe(true)
+
+		handler("h")
+		handler("i")
+		handler(ENTER)
+
+		// Picker should be closed immediately (closePicker is called before async newSession)
 		expect(f.pickerOpen()).toBe(false)
 	})
 })
