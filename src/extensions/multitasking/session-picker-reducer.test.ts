@@ -354,7 +354,28 @@ describe("type-then-enter flow", () => {
 	})
 })
 
-// ─── Group 9: Unknown/unhandled events ────────────────────────────────────────
+// ─── Group 9: Dismiss and reopen resets newSessionInput ─────────────────────
+
+describe("dismiss and reopen", () => {
+	it("resets newSessionInput when the picker is dismissed and reopened", () => {
+		const sessions = makeSessions(3)
+		// Simulate: load sessions, type some text, dismiss, then reopen.
+		let state = loadedState(sessions)
+		state = pickerReducer(state, { type: "key-text", text: "h" }).state
+		state = pickerReducer(state, { type: "key-text", text: "i" }).state
+		expect(state.newSessionInput).toBe("hi")
+
+		// Dismiss the picker (host calls closePicker and discards the state).
+		const dismissResult = pickerReducer(state, { type: "key-escape" })
+		expect(dismissResult.effect).toEqual({ type: "dismiss" })
+
+		// Reopen — host creates a fresh state via initialPickerState and reloads sessions.
+		const reopenedState = loadedState(sessions)
+		expect(reopenedState.newSessionInput).toBe("")
+	})
+})
+
+// ─── Group 10: Unknown/unhandled events ────────────────────────────────────────
 
 describe("unhandled events", () => {
 	it("returns state unchanged with none effect for unknown event types", () => {

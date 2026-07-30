@@ -15,9 +15,6 @@ import type { SessionInfo } from "@earendil-works/pi-coding-agent"
 
 export type { SessionInfo }
 
-/** Index of the virtual "New session" entry that sits below the session list. */
-export const NEW_SESSION_INDEX = -1
-
 export interface PickerState {
 	sessions: SessionInfo[]
 	highlightIndex: number
@@ -90,7 +87,6 @@ export function pickerReducer(state: PickerState, event: PickerEvent): PickerRed
 		case "key-up": {
 			if (state.loading) return { state, effect: { type: "none" } }
 			const total = entryCount(state)
-			if (total === 0) return { state, effect: { type: "none" } }
 			const newIndex = state.highlightIndex <= 0 ? total - 1 : state.highlightIndex - 1
 			return {
 				state: { ...state, highlightIndex: newIndex },
@@ -101,7 +97,6 @@ export function pickerReducer(state: PickerState, event: PickerEvent): PickerRed
 		case "key-down": {
 			if (state.loading) return { state, effect: { type: "none" } }
 			const total = entryCount(state)
-			if (total === 0) return { state, effect: { type: "none" } }
 			const newIndex = state.highlightIndex >= total - 1 ? 0 : state.highlightIndex + 1
 			return {
 				state: { ...state, highlightIndex: newIndex },

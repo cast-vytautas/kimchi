@@ -21,7 +21,6 @@ export function keyToPickerEvent(data: string): PickerEvent | undefined {
 	if (matchesKey(data, Key.down)) return { type: "key-down" }
 	if (matchesKey(data, Key.enter)) return { type: "key-enter" }
 	if (matchesKey(data, Key.escape)) return { type: "key-escape" }
-	if (matchesKey(data, Key.left)) return { type: "key-escape" } // left arrow dismisses
 	if (matchesKey(data, Key.backspace)) return { type: "key-backspace" }
 	// Printable characters: single-char strings that aren't control sequences
 	if (data.length === 1 && data >= " " && data <= "~") {
