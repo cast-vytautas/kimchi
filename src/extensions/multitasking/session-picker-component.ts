@@ -45,7 +45,7 @@ export function keyToPickerEvent(data: string): PickerEvent | undefined {
 
 // ─── Rendering ───────────────────────────────────────────────────────────────
 
-function formatRelativeTime(date: Date, now: Date = new Date()): string {
+export function formatRelativeTime(date: Date, now: Date = new Date()): string {
 	const diffMs = now.getTime() - date.getTime()
 	if (diffMs < 1000) return "just now"
 	// Use formatDuration for sub-minute durations (e.g. "30.0s ago")

@@ -236,9 +236,9 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 	pi.registerCommand("sessions", {
 		description: "Open the session picker to switch sessions",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
+			if (!canOpenPickerViaCommand()) return
 			commandCtx = ctx
 			currentCtx = ctx
-			if (!canOpenPickerViaCommand()) return
 			// Remove the shim widget if it's still up, then open the picker directly
 			ctx.ui.setWidget(SESSION_PICKER_WIDGET_KEY, undefined, SESSION_PICKER_WIDGET_OPTIONS)
 			openPicker()

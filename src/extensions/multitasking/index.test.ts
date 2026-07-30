@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { describe, expect, it, vi } from "vitest"
 import { claimRawInputCapture } from "../shared-input.js"
 import { multitaskingExtension } from "./index.js"
-import { attentionIndicator } from "./session-picker-component.js"
+import { attentionIndicator, formatRelativeTime } from "./session-picker-component.js"
 import type { SessionInfo } from "./session-picker-reducer.js"
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -434,6 +434,37 @@ describe("left arrow toggle", () => {
 		// Reopen via left arrow — should work since conditions are met
 		handler(LEFT_ARROW)
 		expect(f.pickerOpen()).toBe(true)
+	})
+})
+
+// ─── formatRelativeTime tests ──────────────────────────────────────────────
+
+describe("formatRelativeTime", () => {
+	const now = new Date("2026-07-28T10:00:00.000Z")
+
+	it("returns 'just now' for durations under 1 second", () => {
+		const date = new Date(now.getTime() - 500)
+		expect(formatRelativeTime(date, now)).toBe("just now")
+	})
+
+	it("formats sub-minute durations using formatDuration (e.g. '30.0s ago')", () => {
+		const date = new Date(now.getTime() - 30_000)
+		expect(formatRelativeTime(date, now)).toBe("30.0s ago")
+	})
+
+	it("formats sub-hour durations as '<n>m ago'", () => {
+		const date = new Date(now.getTime() - 30 * 60_000) // 30 minutes
+		expect(formatRelativeTime(date, now)).toBe("30m ago")
+	})
+
+	it("formats sub-day durations as '<n>h ago'", () => {
+		const date = new Date(now.getTime() - 5 * 3_600_000) // 5 hours
+		expect(formatRelativeTime(date, now)).toBe("5h ago")
+	})
+
+	it("formats sub-week durations as '<n>d ago'", () => {
+		const date = new Date(now.getTime() - 3 * 86_400_000) // 3 days
+		expect(formatRelativeTime(date, now)).toBe("3d ago")
 	})
 })
 
