@@ -1,5 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { type Component, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import { formatDuration } from "../format.js"
 import {
 	initialPickerState,
 	type PickerEffect,
@@ -21,6 +22,7 @@ export function keyToPickerEvent(data: string): PickerEvent | undefined {
 	if (matchesKey(data, Key.down)) return { type: "key-down" }
 	if (matchesKey(data, Key.enter)) return { type: "key-enter" }
 	if (matchesKey(data, Key.escape)) return { type: "key-escape" }
+	if (matchesKey(data, Key.left)) return { type: "key-left" }
 	if (matchesKey(data, Key.backspace)) return { type: "key-backspace" }
 	// Printable characters: single-char strings that aren't control sequences
 	if (data.length === 1 && data >= " " && data <= "~") {
@@ -45,8 +47,10 @@ export function keyToPickerEvent(data: string): PickerEvent | undefined {
 
 function formatRelativeTime(date: Date, now: Date = new Date()): string {
 	const diffMs = now.getTime() - date.getTime()
+	if (diffMs < 1000) return "just now"
+	// Use formatDuration for sub-minute durations (e.g. "30.0s ago")
+	if (diffMs < 60_000) return `${formatDuration(diffMs)} ago`
 	const diffMin = Math.floor(diffMs / 60000)
-	if (diffMin < 1) return "just now"
 	if (diffMin < 60) return `${diffMin}m ago`
 	const diffHr = Math.floor(diffMin / 60)
 	if (diffHr < 24) return `${diffHr}h ago`
@@ -60,7 +64,24 @@ function truncateText(text: string, maxWidth: number): string {
 	return truncateToWidth(text, maxWidth, "…")
 }
 
-export function renderPickerLines(state: PickerState, theme: Theme, width: number): string[] {
+/**
+ * Computes the attention indicator character for a session.
+ *
+ * - Current session → "▶" (arrow)
+ * - Modified after sessionStartTime → "●" (active/recent)
+ * - Otherwise → "○" (stale)
+ */
+export function attentionIndicator(
+	session: SessionInfo,
+	currentSessionId: string | undefined,
+	sessionStartTime: Date | undefined,
+): string {
+	if (session.id === currentSessionId) return "▶"
+	if (sessionStartTime && session.modified.getTime() > sessionStartTime.getTime()) return "●"
+	return "○"
+}
+
+export function renderPickerLines(state: PickerState, theme: Theme, width: number, sessionStartTime?: Date): string[] {
 	const lines: string[] = []
 	const add = (line = "") => lines.push(truncateToWidth(line, width, ""))
 	const indent = "  "
@@ -80,9 +101,9 @@ export function renderPickerLines(state: PickerState, theme: Theme, width: numbe
 	for (let i = 0; i < state.sessions.length; i++) {
 		const session = state.sessions[i]
 		const isHighlighted = i === state.highlightIndex
-		const isCurrent = session.id === state.currentSessionId
 
-		const marker = isCurrent ? "▶" : isHighlighted ? "›" : " "
+		const indicator = attentionIndicator(session, state.currentSessionId, sessionStartTime)
+		const marker = isHighlighted ? "›" : " "
 		const markerColor = isHighlighted ? "accent" : "dim"
 
 		const name = session.name || truncateText(session.firstMessage, 40) || session.id.slice(0, 8)
@@ -92,8 +113,9 @@ export function renderPickerLines(state: PickerState, theme: Theme, width: numbe
 		const label = isHighlighted ? theme.fg("accent", name) : theme.fg("text", name)
 		const meta = theme.fg("dim", ` ${time} · ${count}`)
 
-		const markerStr = theme.fg(markerColor, `${marker} `)
-		add(`${indent}${markerStr}${label}${meta}`)
+		const indicatorStr = theme.fg(markerColor, `${indicator}`)
+		const markerStr = theme.fg(markerColor, `${marker}`)
+		add(`${indent}${indicatorStr}${markerStr} ${label}${meta}`)
 
 		if (isHighlighted && session.firstMessage) {
 			const preview = theme.fg("dim", truncateText(session.firstMessage, width - 4))
@@ -129,11 +151,13 @@ export function renderPickerLines(state: PickerState, theme: Theme, width: numbe
 export interface SessionPickerComponentOptions {
 	initialState?: PickerState
 	onStateChange?: (state: PickerState) => void
+	sessionStartTime?: Date
 }
 
 export class SessionPickerComponent implements Component {
 	private state: PickerState
 	private readonly onStateChange?: (state: PickerState) => void
+	private readonly sessionStartTime?: Date
 
 	constructor(
 		private readonly theme: Theme,
@@ -143,6 +167,7 @@ export class SessionPickerComponent implements Component {
 	) {
 		this.state = options.initialState ?? initialPickerState()
 		this.onStateChange = options.onStateChange
+		this.sessionStartTime = options.sessionStartTime
 	}
 
 	getState(): PickerState {
@@ -156,7 +181,7 @@ export class SessionPickerComponent implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		return renderPickerLines(this.state, this.theme, width)
+		return renderPickerLines(this.state, this.theme, width, this.sessionStartTime)
 	}
 
 	handleInput(data: string): void {

@@ -324,6 +324,41 @@ describe("key-escape", () => {
 	})
 })
 
+// ─── Group 7b: key-left (dismiss toggle) ─────────────────────────────────────
+
+describe("key-left", () => {
+	it("produces dismiss effect when picker is open", () => {
+		const state = loadedState(makeSessions(3))
+		const { state: nextState, effect } = pickerReducer(state, { type: "key-left" })
+		expect(effect).toEqual({ type: "dismiss" })
+		expect(nextState).toStrictEqual(state)
+	})
+
+	it("produces dismiss even when sessions are empty", () => {
+		const state = initialPickerState()
+		const { effect } = pickerReducer(state, { type: "key-left" })
+		expect(effect).toEqual({ type: "dismiss" })
+	})
+
+	it("produces dismiss even when text has been typed", () => {
+		const state: PickerState = {
+			...loadedState(makeSessions(2)),
+			newSessionInput: "draft",
+		}
+		const { effect } = pickerReducer(state, { type: "key-left" })
+		expect(effect).toEqual({ type: "dismiss" })
+	})
+
+	it("produces dismiss even when highlight is on New session entry", () => {
+		const state: PickerState = {
+			...loadedState(makeSessions(2)),
+			highlightIndex: 2,
+		}
+		const { effect } = pickerReducer(state, { type: "key-left" })
+		expect(effect).toEqual({ type: "dismiss" })
+	})
+})
+
 // ─── Group 8: Integration — type then Enter ──────────────────────────────────
 
 describe("type-then-enter flow", () => {

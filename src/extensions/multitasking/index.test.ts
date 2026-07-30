@@ -2,6 +2,8 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { describe, expect, it, vi } from "vitest"
 import { claimRawInputCapture } from "../shared-input.js"
 import { multitaskingExtension } from "./index.js"
+import { attentionIndicator } from "./session-picker-component.js"
+import type { SessionInfo } from "./session-picker-reducer.js"
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -346,5 +348,160 @@ describe("typing and new session creation", () => {
 
 		// Picker should be closed immediately (closePicker is called before async newSession)
 		expect(f.pickerOpen()).toBe(false)
+	})
+})
+
+// ─── /sessions command tests ────────────────────────────────────────────────
+
+describe("/sessions command", () => {
+	it("opens the picker regardless of editor state", async () => {
+		const f = makeFixture()
+		f.controls.editorText = "some text in editor"
+		start(f)
+
+		await f.invokeSessionsCommand()
+
+		expect(f.pickerOpen()).toBe(true)
+	})
+
+	it("opens the picker regardless of agent idle status", async () => {
+		const f = makeFixture()
+		f.controls.idle = false
+		start(f)
+
+		await f.invokeSessionsCommand()
+
+		expect(f.pickerOpen()).toBe(true)
+	})
+
+	it("does NOT open when an overlay is active", async () => {
+		const f = makeFixture()
+		f.controls.hasOverlay = true
+		start(f)
+
+		await f.invokeSessionsCommand()
+
+		expect(f.pickerOpen()).toBe(false)
+	})
+})
+
+// ─── Left arrow toggle tests ────────────────────────────────────────────────
+
+describe("left arrow toggle", () => {
+	it("dismisses the picker when it is open (toggle behaviour)", () => {
+		const f = makeFixture()
+		const handler = start(f)
+
+		// Open via left arrow
+		handler(LEFT_ARROW)
+		expect(f.pickerOpen()).toBe(true)
+
+		// Left arrow again should dismiss
+		const result = handler(LEFT_ARROW)
+		expect(f.pickerOpen()).toBe(false)
+		expect(result).toEqual({ consume: true })
+	})
+
+	it("left arrow dismiss works even after typing text", () => {
+		const f = makeFixture()
+		const handler = start(f)
+
+		handler(LEFT_ARROW)
+		expect(f.pickerOpen()).toBe(true)
+
+		// Type some text
+		handler("d")
+		handler("e")
+		handler("m")
+
+		// Left arrow should still dismiss
+		handler(LEFT_ARROW)
+		expect(f.pickerOpen()).toBe(false)
+	})
+
+	it("reopening after left-arrow dismiss reloads sessions (fresh state)", async () => {
+		const f = makeFixture()
+		const handler = start(f)
+
+		// Open via /sessions to capture commandCtx
+		await f.invokeSessionsCommand()
+		expect(f.pickerOpen()).toBe(true)
+
+		// Dismiss with left arrow
+		handler(LEFT_ARROW)
+		expect(f.pickerOpen()).toBe(false)
+
+		// Reopen via left arrow — should work since conditions are met
+		handler(LEFT_ARROW)
+		expect(f.pickerOpen()).toBe(true)
+	})
+})
+
+// ─── Attention indicator tests ──────────────────────────────────────────────
+
+describe("attention indicators", () => {
+	function makeSessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
+		return {
+			path: overrides.path ?? "/path/to/s.jsonl",
+			id: overrides.id ?? "s1",
+			cwd: overrides.cwd ?? "/cwd",
+			name: overrides.name ?? "Session",
+			created: overrides.created ?? new Date("2026-07-28T09:00:00Z"),
+			modified: overrides.modified ?? new Date("2026-07-28T10:00:00Z"),
+			messageCount: overrides.messageCount ?? 5,
+			firstMessage: overrides.firstMessage ?? "Hello",
+			allMessagesText: overrides.allMessagesText ?? "Hello",
+		}
+	}
+
+	it("returns '▶' for the current session", () => {
+		const session = makeSessionInfo({ id: "current" })
+		const startTime = new Date("2026-07-28T09:30:00Z")
+		expect(attentionIndicator(session, "current", startTime)).toBe("▶")
+	})
+
+	it("returns '●' for a session modified after the current session start time", () => {
+		const session = makeSessionInfo({
+			id: "other",
+			modified: new Date("2026-07-28T10:00:00Z"),
+		})
+		const startTime = new Date("2026-07-28T09:30:00Z")
+		expect(attentionIndicator(session, "current", startTime)).toBe("●")
+	})
+
+	it("returns '○' for a session modified before the current session start time", () => {
+		const session = makeSessionInfo({
+			id: "other",
+			modified: new Date("2026-07-28T08:00:00Z"),
+		})
+		const startTime = new Date("2026-07-28T09:30:00Z")
+		expect(attentionIndicator(session, "current", startTime)).toBe("○")
+	})
+
+	it("returns '○' when sessionStartTime is undefined", () => {
+		const session = makeSessionInfo({
+			id: "other",
+			modified: new Date("2026-07-28T10:00:00Z"),
+		})
+		expect(attentionIndicator(session, "current", undefined)).toBe("○")
+	})
+
+	it("returns '▶' for current session even if modified before start time", () => {
+		const session = makeSessionInfo({
+			id: "current",
+			modified: new Date("2026-07-28T08:00:00Z"),
+		})
+		const startTime = new Date("2026-07-28T09:30:00Z")
+		expect(attentionIndicator(session, "current", startTime)).toBe("▶")
+	})
+
+	it("returns '●' when modified exactly at start time boundary (strictly greater)", () => {
+		const startTime = new Date("2026-07-28T09:30:00Z")
+		const session = makeSessionInfo({
+			id: "other",
+			modified: new Date("2026-07-28T09:30:00Z"),
+		})
+		// Modified == start → not strictly greater → stale
+		expect(attentionIndicator(session, "current", startTime)).toBe("○")
 	})
 })

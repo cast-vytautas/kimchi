@@ -30,6 +30,7 @@ export type PickerEvent =
 	| { type: "key-down" }
 	| { type: "key-enter" }
 	| { type: "key-escape" }
+	| { type: "key-left" }
 	| { type: "key-text"; text: string }
 	| { type: "key-backspace" }
 
@@ -148,7 +149,8 @@ export function pickerReducer(state: PickerState, event: PickerEvent): PickerRed
 			}
 		}
 
-		case "key-escape": {
+		case "key-escape":
+		case "key-left": {
 			return { state, effect: { type: "dismiss" } }
 		}
 

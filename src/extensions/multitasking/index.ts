@@ -31,6 +31,7 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 	let pickerState: PickerState = initialPickerState()
 	let prevEditorFactory: ReturnType<ExtensionContext["ui"]["getEditorComponent"]> | undefined
 	let editorSwapped = false
+	let sessionStartTime: Date | undefined
 
 	const onPickerStateChange = (next: PickerState): void => {
 		pickerState = next
@@ -63,6 +64,12 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		return true
 	}
 
+	/** Can open via /sessions command — bypasses idle/editor checks but still guards overlay. */
+	const canOpenPickerViaCommand = (): boolean => {
+		if (!tuiRef || tuiRef.hasOverlay()) return false
+		return true
+	}
+
 	const openPicker = (): void => {
 		if (pickerActive || !currentCtx) return
 		pickerActive = true
@@ -78,7 +85,7 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 					theme,
 					(effect: PickerEffect) => handleEffect(effect),
 					() => tui.requestRender(),
-					{ initialState: pickerState, onStateChange: onPickerStateChange },
+					{ initialState: pickerState, onStateChange: onPickerStateChange, sessionStartTime },
 				)
 				return component
 			},
@@ -172,14 +179,9 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 			return undefined
 		}
 
-		// When picker is open, route all input to the component
-		// Left arrow also dismisses (toggle behaviour)
-		if (matchesKey(data, Key.left)) {
-			closePicker()
-			return { consume: true }
-		}
-
-		// Route to component
+		// When picker is open, route all input to the component.
+		// The component's key mapper handles left-arrow (dismiss),
+		// up/down/enter/escape, text, and backspace.
 		component?.handleInput(data)
 		return { consume: true }
 	}
@@ -190,6 +192,7 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		// Clean up any previous picker state
 		closePicker()
 		currentCtx = ctx
+		sessionStartTime = new Date()
 
 		// Mount a shim widget to capture the tui reference before the picker opens.
 		// This follows the same pattern as session-mode.ts: mount a shim, capture
@@ -215,6 +218,7 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		currentCtx = null
 		commandCtx = null
 		tuiRef = null
+		sessionStartTime = undefined
 	})
 
 	// ─── Command context capture ──────────────────────────────────────────
@@ -234,6 +238,7 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			commandCtx = ctx
 			currentCtx = ctx
+			if (!canOpenPickerViaCommand()) return
 			// Remove the shim widget if it's still up, then open the picker directly
 			ctx.ui.setWidget(SESSION_PICKER_WIDGET_KEY, undefined, SESSION_PICKER_WIDGET_OPTIONS)
 			openPicker()
