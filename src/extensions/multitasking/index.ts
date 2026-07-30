@@ -5,11 +5,11 @@ import type {
 	ExtensionFactory,
 } from "@earendil-works/pi-coding-agent"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
-import { Key, matchesKey } from "@earendil-works/pi-tui"
+import { Key, matchesKey, type TUI } from "@earendil-works/pi-tui"
 import { NoOpPickerEditor } from "../onboarding/picker-editor.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { SessionPickerComponent } from "./session-picker-component.js"
-import { initialPickerState, type PickerEffect, type PickerState, type SessionInfo } from "./session-picker-reducer.js"
+import { initialPickerState, type PickerEffect, type PickerState } from "./session-picker-reducer.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -26,7 +26,7 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
 	let pickerActive = false
 	let unsubscribeInput: (() => void) | undefined
-	let tuiRef: { hasOverlay(): boolean } | null = null
+	let tuiRef: TUI | null = null
 	let component: SessionPickerComponent | undefined
 	let pickerState: PickerState = initialPickerState()
 	let prevEditorFactory: ReturnType<ExtensionContext["ui"]["getEditorComponent"]> | undefined
@@ -41,18 +41,10 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 	async function loadSessions(ctx: ExtensionContext): Promise<void> {
 		if (!component) return
 		const cwd = ctx.cwd
+		const sessionDir = ctx.sessionManager.getSessionDir()
 		try {
-			const sessions = await SessionManager.list(cwd)
-			// Map upstream SessionInfo to our local SessionInfo type
-			const mapped: SessionInfo[] = sessions.map((s) => ({
-				id: s.id,
-				name: s.name ?? "",
-				modified: s.modified,
-				messageCount: s.messageCount,
-				firstMessage: s.firstMessage,
-				sessionPath: s.path,
-			}))
-			component.setSessions(mapped)
+			const sessions = await SessionManager.list(cwd, sessionDir)
+			component.setSessions(sessions)
 		} catch (err) {
 			ctx.ui.notify(`Could not load sessions: ${err instanceof Error ? err.message : String(err)}`, "warning")
 			// Set empty sessions to stop loading state
@@ -67,8 +59,7 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		if (!ctx.isIdle()) return false
 		if (ctx.ui.getEditorText().trim() !== "") return false
 		if (isRawInputCaptureActive()) return false
-		if (!tuiRef) return false
-		if (typeof tuiRef.hasOverlay === "function" && tuiRef.hasOverlay()) return false
+		if (!tuiRef || tuiRef.hasOverlay()) return false
 		return true
 	}
 
@@ -82,7 +73,7 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		currentCtx.ui.setWidget(
 			SESSION_PICKER_WIDGET_KEY,
 			(tui, theme) => {
-				tuiRef = tui as unknown as { hasOverlay(): boolean }
+				tuiRef = tui
 				component = new SessionPickerComponent(
 					theme,
 					(effect: PickerEffect) => handleEffect(effect),
@@ -134,12 +125,6 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 				}
 				break
 			}
-			case "new-session": {
-				// Ticket 02: create a new session with the typed text as first message.
-				// For ticket 01, just dismiss.
-				closePicker()
-				break
-			}
 			case "dismiss": {
 				closePicker()
 				break
@@ -188,7 +173,7 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		ctx.ui.setWidget(
 			SESSION_PICKER_WIDGET_KEY,
 			(tui) => {
-				tuiRef = tui as unknown as { hasOverlay(): boolean }
+				tuiRef = tui
 				return { render: () => [], invalidate: () => {} }
 			},
 			SESSION_PICKER_WIDGET_OPTIONS,
@@ -208,7 +193,18 @@ export const multitaskingExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		tuiRef = null
 	})
 
-	// Register a /sessions command to open the picker from the slash menu
+	// ─── Command context capture ──────────────────────────────────────────
+	//
+	// `switchSession` exists only on `ExtensionCommandContext`, which the pi API
+	// exposes exclusively to registered-command handlers — neither `session_start`
+	// nor `onTerminalInput` can supply one, and there is no API to invoke a command
+	// programmatically. The picker therefore captures a command-capable context
+	// the only way possible: from a command handler.
+	//
+	// The visible `/sessions` command captures it (and also opens the picker). For
+	// the left-arrow trigger, the captured context from any prior `/sessions`
+	// invocation is reused; if none exists yet, switching falls back to a notice.
+
 	pi.registerCommand("sessions", {
 		description: "Open the session picker to switch sessions",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {

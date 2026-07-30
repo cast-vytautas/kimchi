@@ -1,9 +1,10 @@
+import type { SessionInfo } from "@earendil-works/pi-coding-agent"
+
 /**
  * Session picker reducer — pure state machine.
  *
- * Extracted so that keyboard routing, list navigation, session switching
- * and the new-session input buffer can be unit-tested independently of the
- * TUI runtime.
+ * Extracted so that keyboard routing, list navigation, and session switching
+ * can be unit-tested independently of the TUI runtime.
  *
  * The reducer is dependency-free: it takes a `PickerState` plus an input
  * `PickerEvent` and returns the next state together with a `PickerEffect`
@@ -12,22 +13,13 @@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface SessionInfo {
-	id: string
-	name: string
-	modified: Date
-	messageCount: number
-	firstMessage: string
-	sessionPath: string
-}
+export type { SessionInfo }
 
 export interface PickerState {
 	sessions: SessionInfo[]
 	highlightIndex: number
 	loading: boolean
 	currentSessionId: string | undefined
-	/** Accumulated text for the new-session input buffer (ticket 02). */
-	newSessionInput: string
 }
 
 export type PickerEvent =
@@ -36,13 +28,8 @@ export type PickerEvent =
 	| { type: "key-down" }
 	| { type: "key-enter" }
 	| { type: "key-escape" }
-	| { type: "key-text"; text: string }
 
-export type PickerEffect =
-	| { type: "switch-session"; sessionPath: string }
-	| { type: "new-session"; text: string }
-	| { type: "dismiss" }
-	| { type: "none" }
+export type PickerEffect = { type: "switch-session"; sessionPath: string } | { type: "dismiss" } | { type: "none" }
 
 export interface PickerReduceResult {
 	state: PickerState
@@ -57,7 +44,6 @@ export function initialPickerState(currentSessionId?: string): PickerState {
 		highlightIndex: 0,
 		loading: true,
 		currentSessionId,
-		newSessionInput: "",
 	}
 }
 
@@ -98,33 +84,17 @@ export function pickerReducer(state: PickerState, event: PickerEvent): PickerRed
 		}
 
 		case "key-enter": {
-			// If the user has typed text, produce a new-session effect (ticket 02).
-			// For ticket 01, just produce switch-session.
-			if (state.newSessionInput.trim().length > 0) {
-				return {
-					state,
-					effect: { type: "new-session", text: state.newSessionInput },
-				}
-			}
 			if (state.sessions.length === 0) return { state, effect: { type: "none" } }
 			const session = state.sessions[state.highlightIndex]
 			if (!session) return { state, effect: { type: "none" } }
 			return {
 				state,
-				effect: { type: "switch-session", sessionPath: session.sessionPath },
+				effect: { type: "switch-session", sessionPath: session.path },
 			}
 		}
 
 		case "key-escape": {
 			return { state, effect: { type: "dismiss" } }
-		}
-
-		case "key-text": {
-			// Accumulate typed text into newSessionInput (for ticket 02 new-session flow).
-			return {
-				state: { ...state, newSessionInput: state.newSessionInput + event.text },
-				effect: { type: "none" },
-			}
 		}
 
 		default:

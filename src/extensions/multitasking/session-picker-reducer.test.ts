@@ -5,12 +5,15 @@ import { initialPickerState, type PickerState, pickerReducer, type SessionInfo }
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 	return {
+		path: overrides.path ?? "/path/to/session-1.jsonl",
 		id: overrides.id ?? "session-1",
+		cwd: overrides.cwd ?? "/cwd",
 		name: overrides.name ?? "My Session",
+		created: overrides.created ?? new Date("2026-07-28T09:00:00Z"),
 		modified: overrides.modified ?? new Date("2026-07-28T10:00:00Z"),
 		messageCount: overrides.messageCount ?? 5,
 		firstMessage: overrides.firstMessage ?? "Hello world",
-		sessionPath: overrides.sessionPath ?? "/path/to/session-1.jsonl",
+		allMessagesText: overrides.allMessagesText ?? "Hello world",
 	}
 }
 
@@ -20,7 +23,7 @@ function makeSessions(count: number): SessionInfo[] {
 			id: `session-${i + 1}`,
 			name: `Session ${i + 1}`,
 			modified: new Date(2026, 6, 28, 10, i, 0),
-			sessionPath: `/path/to/session-${i + 1}.jsonl`,
+			path: `/path/to/session-${i + 1}.jsonl`,
 		}),
 	)
 }
@@ -34,7 +37,6 @@ describe("initial state", () => {
 		expect(state.highlightIndex).toBe(0)
 		expect(state.loading).toBe(true)
 		expect(state.currentSessionId).toBe("abc-123")
-		expect(state.newSessionInput).toBe("")
 	})
 
 	it("currentSessionId is undefined when not provided", () => {
@@ -176,7 +178,7 @@ describe("key-enter", () => {
 			loading: false,
 		}
 		const { state: nextState, effect } = pickerReducer(state, { type: "key-enter" })
-		expect(effect).toEqual({ type: "switch-session", sessionPath: sessions[1].sessionPath })
+		expect(effect).toEqual({ type: "switch-session", sessionPath: sessions[1].path })
 		// State unchanged
 		expect(nextState).toStrictEqual(state)
 	})
@@ -190,37 +192,13 @@ describe("key-enter", () => {
 			loading: false,
 		}
 		const { effect } = pickerReducer(state, { type: "key-enter" })
-		expect(effect).toEqual({ type: "switch-session", sessionPath: sessions[0].sessionPath })
+		expect(effect).toEqual({ type: "switch-session", sessionPath: sessions[0].path })
 	})
 
 	it("produces none when sessions list is empty", () => {
 		const state = initialPickerState()
 		const { effect } = pickerReducer(state, { type: "key-enter" })
 		expect(effect).toEqual({ type: "none" })
-	})
-
-	it("with non-empty newSessionInput produces new-session effect", () => {
-		const state: PickerState = {
-			...initialPickerState(),
-			sessions: makeSessions(2),
-			loading: false,
-			newSessionInput: "fix the bug",
-		}
-		const { effect } = pickerReducer(state, { type: "key-enter" })
-		expect(effect).toEqual({ type: "new-session", text: "fix the bug" })
-	})
-
-	it("with whitespace-only newSessionInput still produces switch-session", () => {
-		const sessions = makeSessions(2)
-		const state: PickerState = {
-			...initialPickerState(),
-			sessions,
-			highlightIndex: 0,
-			loading: false,
-			newSessionInput: "   ",
-		}
-		const { effect } = pickerReducer(state, { type: "key-enter" })
-		expect(effect).toEqual({ type: "switch-session", sessionPath: sessions[0].sessionPath })
 	})
 })
 
@@ -245,31 +223,7 @@ describe("key-escape", () => {
 	})
 })
 
-// ─── Group 6: key-text (new-session input accumulation) ───────────────────────
-
-describe("key-text", () => {
-	it("accumulates text into newSessionInput", () => {
-		const state = initialPickerState()
-		const { state: next1 } = pickerReducer(state, { type: "key-text", text: "h" })
-		expect(next1.newSessionInput).toBe("h")
-		const { state: next2 } = pickerReducer(next1, { type: "key-text", text: "i" })
-		expect(next2.newSessionInput).toBe("hi")
-	})
-
-	it("accumulates multi-character text", () => {
-		const state = initialPickerState()
-		const { state: next } = pickerReducer(state, { type: "key-text", text: "hello" })
-		expect(next.newSessionInput).toBe("hello")
-	})
-
-	it("key-text produces none effect", () => {
-		const state = initialPickerState()
-		const { effect } = pickerReducer(state, { type: "key-text", text: "x" })
-		expect(effect).toEqual({ type: "none" })
-	})
-})
-
-// ─── Group 7: Unknown/unhandled events ────────────────────────────────────────
+// ─── Group 6: Unknown/unhandled events ────────────────────────────────────────
 
 describe("unhandled events", () => {
 	it("returns state unchanged with none effect for unknown event types", () => {

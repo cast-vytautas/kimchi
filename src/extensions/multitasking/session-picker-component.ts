@@ -10,7 +10,7 @@ import {
 
 // ─── Key mapping ─────────────────────────────────────────────────────────────
 
-export type PickerKeyEvent = "key-up" | "key-down" | "key-enter" | "key-escape" | "key-text" | "key-left" | undefined
+export type PickerKeyEvent = "key-up" | "key-down" | "key-enter" | "key-escape" | "key-left" | undefined
 
 export function keyToPickerEvent(data: string): PickerKeyEvent {
 	if (matchesKey(data, Key.up)) return "key-up"
@@ -18,9 +18,6 @@ export function keyToPickerEvent(data: string): PickerKeyEvent {
 	if (matchesKey(data, Key.enter)) return "key-enter"
 	if (matchesKey(data, Key.escape)) return "key-escape"
 	if (matchesKey(data, Key.left)) return "key-left"
-	// Printable character: single char in the printable range
-	if (data.length === 1 && data >= " ") return "key-text"
-	if (data.length > 1 && data >= " ") return "key-text"
 	return undefined
 }
 
@@ -87,14 +84,6 @@ export function renderPickerLines(state: PickerState, theme: Theme, width: numbe
 		}
 	}
 
-	// New-session input line
-	if (state.newSessionInput) {
-		add("")
-		const inputLabel = theme.fg("accent", "New session: ")
-		const inputText = theme.fg("text", state.newSessionInput)
-		add(`${indent}${inputLabel}${inputText}`)
-	}
-
 	add("")
 	return lines
 }
@@ -144,7 +133,7 @@ export class SessionPickerComponent implements Component {
 			return
 		}
 
-		const result = pickerReducer(this.state, { type: event, text: data } as never)
+		const result = pickerReducer(this.state, { type: event })
 		this.state = result.state
 		this.onStateChange?.(this.state)
 
