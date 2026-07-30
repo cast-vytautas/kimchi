@@ -6,9 +6,14 @@
  * connection, calls `tools/list`, prints the result as JSON to stdout,
  * and exits.
  *
- * The `name` field is passed to both `probeTools` calls and to
- * `authenticate` so that a repeat probe of an already-authorized
- * server finds stored OAuth tokens and skips the browser flow.
+ * The `name` field selects the OAuth token-store key. Before any OAuth
+ * write, the probe checks whether an auth entry already exists under that
+ * name for a *different* URL (e.g. the user edited the URL but kept the
+ * name). If so, it probes under a throwaway `__probe_<uuid>` name and
+ * cleans it up afterwards so the real server's stored tokens are never
+ * overwritten. If no entry exists or the URL matches, the real name is used
+ * so a repeat probe of an already-authorized server finds stored OAuth
+ * tokens and skips the browser flow.
  *
  * Used by Kimchi Desktop's MCP server configuration UI to populate a
  * multiselect dropdown of available tools when the user picks
@@ -20,8 +25,10 @@
  * Exit:   0 on success (including needs-auth), 1 on error
  */
 
+import { randomUUID } from "node:crypto"
 import { Type } from "typebox"
 import { Value } from "typebox/value"
+import { getAuthEntry, removeAuthEntry } from "../extensions/mcp-adapter/mcp-auth.js"
 import { authenticate, supportsOAuth } from "../extensions/mcp-adapter/mcp-auth-flow.js"
 import { McpServerManager } from "../extensions/mcp-adapter/server-manager.js"
 import type { McpTool, ServerEntry } from "../extensions/mcp-adapter/types.js"
@@ -114,19 +121,26 @@ async function runProbe(args: string[]): Promise<number> {
 		? "Probe timed out after 60 seconds (including OAuth flow)"
 		: "Probe timed out after 15 seconds"
 
+	// Guard against URL mismatch in the OAuth token store. The token store is
+	// keyed by server name, so probing a server whose URL was edited (but whose
+	// name stayed the same) would otherwise overwrite the real server's stored
+	// credentials. See {@link resolveProbeName} for the decision rules.
+	const probeName = resolveProbeName(name, definition)
+	const usedThrowaway = probeName !== name
+
 	const manager = new McpServerManager()
 	try {
-		// Pass the real server name so the token store (keyed by server name)
+		// Use `probeName` (the real name or a throwaway) so the token-store key
 		// is shared between the initial probe, authenticate(), and the retry.
-		// A repeat probe of an already-authorized server will find stored
-		// OAuth tokens on the first call and skip the browser flow entirely.
-		let result = await withTimeout(manager.probeTools(definition, name), timeoutMs, timeoutMsg)
+		// A repeat probe of an already-authorized server finds stored OAuth
+		// tokens on the first call and skips the browser flow entirely.
+		let result = await withTimeout(manager.probeTools(definition, probeName), timeoutMs, timeoutMsg)
 
 		// If the server needs auth and OAuth is supported, attempt the full
 		// OAuth flow (browser redirect + callback) then retry the probe.
 		if (result.needsAuth && isOAuthCapable && definition.url) {
 			try {
-				await withTimeout(authenticate(name, definition.url, definition), timeoutMs, "OAuth flow timed out")
+				await withTimeout(authenticate(probeName, definition.url, definition), timeoutMs, "OAuth flow timed out")
 			} catch (err) {
 				// Auth failed or timed out — return needsAuth: true with the real
 				// error message so the UI can display it. Exit 0 because the probe
@@ -137,7 +151,7 @@ async function runProbe(args: string[]): Promise<number> {
 
 			// Retry probe after successful auth, reusing the same name so the
 			// token store has the credentials.
-			result = await withTimeout(manager.probeTools(definition, name), timeoutMs, timeoutMsg)
+			result = await withTimeout(manager.probeTools(definition, probeName), timeoutMs, timeoutMsg)
 		}
 
 		const output: ProbeResult = {
@@ -154,7 +168,40 @@ async function runProbe(args: string[]): Promise<number> {
 		return await emitError(err instanceof Error ? err.message : String(err), null)
 	} finally {
 		await manager.closeAll().catch(() => {})
+		// Clean up throwaway probe credentials so the token store never
+		// accumulates `__probe_*` entries. Never called for the real name —
+		// real credentials must survive the probe.
+		if (usedThrowaway) {
+			removeAuthEntry(probeName)
+		}
 	}
+}
+
+/**
+ * Decide which name to use as the OAuth token-store key during a probe.
+ *
+ * The token store is keyed by server name. If an auth entry already exists
+ * under `name` for a *different* URL — e.g. the user edited the server's URL
+ * but kept the name — probing with the real name would overwrite the real
+ * server's stored credentials. To avoid that, fall back to a throwaway
+ * `__probe_<uuid>` name whenever the stored URL does not match the probe's
+ * URL; the caller cleans it up with {@link removeAuthEntry} in its `finally`.
+ *
+ * When no entry exists (new server) or the URL matches (repeat probe of an
+ * authorized server), the real name is used so that stored tokens are found
+ * and OAuth is skipped on repeat probes.
+ */
+function resolveProbeName(name: string, definition: ServerEntry): string {
+	const existing = getAuthEntry(name)
+	// No stored entry: new server — use the real name so the first probe
+	// persists tokens under it and a repeat probe finds them.
+	if (!existing) return name
+	// URL matches: repeat probe of an authorized server — reuse the name so
+	// stored tokens are found and the browser flow is skipped.
+	if (existing.serverUrl === definition.url) return name
+	// Entry exists for a different URL — isolate the probe's credentials under
+	// a throwaway name so the real server's tokens are never overwritten.
+	return `__probe_${randomUUID()}`
 }
 
 function readStdin(): Promise<string> {

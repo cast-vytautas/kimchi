@@ -28,6 +28,18 @@ vi.mock("../extensions/mcp-adapter/mcp-auth-flow.js", () => ({
 	authenticate: mockAuthenticate,
 }))
 
+// Mock the auth storage module — we control getAuthEntry / removeAuthEntry so
+// the URL-mismatch guard can be exercised without touching the filesystem.
+const { mockGetAuthEntry, mockRemoveAuthEntry } = vi.hoisted(() => ({
+	mockGetAuthEntry: vi.fn(),
+	mockRemoveAuthEntry: vi.fn(),
+}))
+
+vi.mock("../extensions/mcp-adapter/mcp-auth.js", () => ({
+	getAuthEntry: mockGetAuthEntry,
+	removeAuthEntry: mockRemoveAuthEntry,
+}))
+
 import { runMcp } from "./mcp.js"
 
 // ---------------------------------------------------------------------------
@@ -113,6 +125,10 @@ describe("kimchi mcp probe", () => {
 		mockSupportsOAuth.mockReturnValue(false)
 		// Default: no pending auth
 		mockAuthenticate.mockResolvedValue("authenticated")
+		// Default: no stored auth entry (new server). Individual tests override
+		// this to simulate an existing entry with a same/different URL.
+		mockGetAuthEntry.mockReturnValue(undefined)
+		mockRemoveAuthEntry.mockReturnValue(undefined)
 	})
 
 	afterEach(() => {
@@ -553,5 +569,130 @@ describe("kimchi mcp probe", () => {
 		expect(parsed.tools[4999].description).toBe(bigTools[4999].description)
 		expect(parsed.needsAuth).toBe(false)
 		expect(parsed.error).toBeNull()
+	})
+
+	// --- URL mismatch guard (OAuth token store key) ----------------------
+
+	it("uses the real name and does not clean up when an auth entry with a matching URL exists", async () => {
+		// Existing entry stored for the same URL → repeat probe of an authorized
+		// server. The guard should reuse the real name so stored tokens are found
+		// and OAuth is skipped.
+		mockGetAuthEntry.mockReturnValue({ serverUrl: OAUTH_SERVER.url, tokens: { accessToken: "tok" } })
+		mockSupportsOAuth.mockReturnValue(true)
+		mockProbeTools.mockResolvedValue({ tools: [{ name: "secure_tool" }], needsAuth: false })
+
+		mockStdin(probeInput(OAUTH_SERVER))
+		const out = captureStdout()
+
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(0)
+		expect(out.json.error).toBeNull()
+		// Real name used for both probe and (not invoked) auth.
+		expect(mockProbeTools).toHaveBeenCalledWith(OAUTH_SERVER, SERVER_NAME)
+		expect(mockAuthenticate).not.toHaveBeenCalled()
+		// No cleanup — real credentials must survive the probe.
+		expect(mockRemoveAuthEntry).not.toHaveBeenCalled()
+	})
+
+	it("uses a throwaway name and cleans it up when an auth entry with a different URL exists", async () => {
+		// The user edited the server's URL but kept the name. A stored entry
+		// exists under the real name for a DIFFERENT URL — probing with the real
+		// name would overwrite the real server's tokens.
+		mockGetAuthEntry.mockReturnValue({ serverUrl: "https://old.example.com/mcp", tokens: { accessToken: "tok" } })
+		mockSupportsOAuth.mockReturnValue(true)
+		// First probe needs auth; after auth, retry returns tools.
+		mockProbeTools
+			.mockResolvedValueOnce({ tools: [], needsAuth: true })
+			.mockResolvedValueOnce({ tools: [{ name: "secure_tool" }], needsAuth: false })
+
+		mockStdin(probeInput(OAUTH_SERVER))
+		const out = captureStdout()
+
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(0)
+		expect(out.json.error).toBeNull()
+
+		// Both probeTools calls and authenticate received the throwaway name.
+		const firstCallArg = mockProbeTools.mock.calls[0]?.[1]
+		const secondCallArg = mockProbeTools.mock.calls[1]?.[1]
+		const authNameArg = mockAuthenticate.mock.calls[0]?.[0]
+		expect(firstCallArg).toMatch(/^__probe_[0-9a-f-]{36}$/)
+		expect(secondCallArg).toBe(firstCallArg)
+		expect(authNameArg).toBe(firstCallArg)
+		// The real name was never used as the token-store key.
+		expect(mockProbeTools).not.toHaveBeenCalledWith(OAUTH_SERVER, SERVER_NAME)
+		expect(mockAuthenticate).not.toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER.url, OAUTH_SERVER)
+		// Throwaway credentials cleaned up in the finally block.
+		expect(mockRemoveAuthEntry).toHaveBeenCalledTimes(1)
+		expect(mockRemoveAuthEntry).toHaveBeenCalledWith(firstCallArg)
+	})
+
+	it("uses the real name and does not clean up when no auth entry exists (new server)", async () => {
+		// No stored entry → new server. The guard should use the real name so the
+		// first probe persists tokens under it and a repeat probe finds them.
+		mockGetAuthEntry.mockReturnValue(undefined)
+		mockSupportsOAuth.mockReturnValue(true)
+		mockProbeTools.mockResolvedValue({ tools: [], needsAuth: false })
+
+		mockStdin(probeInput(OAUTH_SERVER))
+		const out = captureStdout()
+
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(0)
+		expect(out.json.error).toBeNull()
+		expect(mockProbeTools).toHaveBeenCalledWith(OAUTH_SERVER, SERVER_NAME)
+		expect(mockRemoveAuthEntry).not.toHaveBeenCalled()
+	})
+
+	it("does not overwrite the real server's tokens when probing an edited URL (entry for a different URL)", async () => {
+		// Scenario: editing a server's URL and probing it must NOT overwrite the
+		// real server's stored tokens. A throwaway name isolates the probe's
+		// credentials, and removeAuthEntry wipes them afterwards.
+		const realUrl = "https://old.example.com/mcp"
+		mockGetAuthEntry.mockReturnValue({ serverUrl: realUrl, tokens: { accessToken: "real-tok" } })
+		mockSupportsOAuth.mockReturnValue(true)
+		// Probe needs auth, OAuth succeeds, retry returns tools.
+		mockProbeTools
+			.mockResolvedValueOnce({ tools: [], needsAuth: true })
+			.mockResolvedValueOnce({ tools: [{ name: "secure_tool" }], needsAuth: false })
+
+		mockStdin(probeInput(OAUTH_SERVER))
+		const out = captureStdout()
+
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(0)
+		expect(out.json.error).toBeNull()
+
+		// The real name (SERVER_NAME) was never passed as the token-store key.
+		const probeNames = mockProbeTools.mock.calls.map((c) => c[1])
+		expect(probeNames).not.toContain(SERVER_NAME)
+		expect(mockAuthenticate).not.toHaveBeenCalledWith(SERVER_NAME, OAUTH_SERVER.url, OAUTH_SERVER)
+		// Throwaway name was cleaned up exactly once.
+		expect(mockRemoveAuthEntry).toHaveBeenCalledTimes(1)
+		expect(mockRemoveAuthEntry.mock.calls[0]?.[0]).not.toBe(SERVER_NAME)
+	})
+
+	it("reuses the real name and skips OAuth on a repeat probe of an unchanged authorized server", async () => {
+		// A repeat probe of an unchanged, authorized server: the stored entry's
+		// URL matches, so the real name is used and the first probe finds the
+		// stored tokens — authenticate() is never called.
+		mockGetAuthEntry.mockReturnValue({ serverUrl: OAUTH_SERVER.url, tokens: { accessToken: "tok" } })
+		mockSupportsOAuth.mockReturnValue(true)
+		mockProbeTools.mockResolvedValue({ tools: [{ name: "secure_tool" }], needsAuth: false })
+
+		mockStdin(probeInput(OAUTH_SERVER))
+		const out = captureStdout()
+
+		const code = await runMcp(["probe", "--json"])
+		expect(code).toBe(0)
+		expect(mockProbeTools).toHaveBeenCalledTimes(1)
+		expect(mockProbeTools).toHaveBeenCalledWith(OAUTH_SERVER, SERVER_NAME)
+		expect(mockAuthenticate).not.toHaveBeenCalled()
+		expect(mockRemoveAuthEntry).not.toHaveBeenCalled()
+		expect(out.json).toEqual({
+			tools: [{ name: "secure_tool", title: undefined, description: undefined }],
+			needsAuth: false,
+			error: null,
+		})
 	})
 })
