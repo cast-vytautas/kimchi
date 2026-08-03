@@ -56,6 +56,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
@@ -81,8 +82,9 @@ import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
-import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
+import { ADVERTISED_CAPABILITIES, AVAILABLE_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { AVAILABLE_COMMANDS } from "./commands.js"
+import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 
@@ -117,6 +119,12 @@ export interface RunAcpOptions {
 	sessionLister?: AcpSessionLister
 	/** Override for tests. Defaults to {@link defaultSessionLoader}. */
 	sessionLoader?: AcpSessionLoader
+	/**
+	 * MCP server manager used by the `_kimchi.dev/probe_mcp_server` extMethod
+	 * handler to create transient probe connections. Injected so tests can stub
+	 * it; production code constructs a real McpServerManager.
+	 */
+	mcpServerManager?: McpServerManager
 }
 
 type TurnContext = {
@@ -155,6 +163,7 @@ export class KimchiAcpAgent implements Agent {
 	private readonly agentDir: string
 	private readonly sessionLister: AcpSessionLister
 	private readonly sessionLoader: AcpSessionLoader
+	private readonly mcpServerManager: McpServerManager | undefined
 	private readonly permissionsEnvFlag = process.env[PERMISSIONS_ENV_KEY]
 	private clientCapabilities: ClientCapabilities | undefined
 	// Track non-text prompt block types we've already warned about so a
@@ -192,6 +201,7 @@ export class KimchiAcpAgent implements Agent {
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
+		this.mcpServerManager = options.mcpServerManager
 	}
 
 	async initialize(request: InitializeRequest): Promise<InitializeResponse> {
@@ -213,7 +223,12 @@ export class KimchiAcpAgent implements Agent {
 				sessionCapabilities: { list: {}, close: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
 				// Extended capabilities
-				_meta: { [CAPABILITIES_KEY]: ADVERTISED_CAPABILITIES },
+				_meta: {
+					[CAPABILITIES_KEY]: {
+						...ADVERTISED_CAPABILITIES,
+						...(this.mcpServerManager ? {} : { probe_mcp_server: false }),
+					},
+				},
 			},
 			authMethods: [],
 		}
@@ -628,6 +643,15 @@ export class KimchiAcpAgent implements Agent {
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
 		await entry.session.abort()
+	}
+
+	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+		switch (method) {
+			case AVAILABLE_METHODS.probe_mcp_server:
+				return handleProbeMcpServer(this.mcpServerManager, params) as unknown as Record<string, unknown>
+			default:
+				throw RequestError.methodNotFound(method)
+		}
 	}
 
 	async shutdown(cause: "signal" | "disconnect" = "disconnect"): Promise<void> {
