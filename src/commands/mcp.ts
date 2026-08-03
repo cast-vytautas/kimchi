@@ -134,7 +134,13 @@ async function runProbe(args: string[]): Promise<number> {
 		// is shared between the initial probe, authenticate(), and the retry.
 		// A repeat probe of an already-authorized server finds stored OAuth
 		// tokens on the first call and skips the browser flow entirely.
-		let result = await withTimeout(manager.probeTools(definition, probeName), timeoutMs, timeoutMsg)
+		let result = await withTimeout(manager.probeTools(probeName, definition), timeoutMs, timeoutMsg)
+		// probeTools returns errors inline via `result.error` (it does not throw
+		// on connect/tools failures) — surface those as exit-1 failures so the UI
+		// can display them, preserving the pre-unification contract.
+		if (result.error) {
+			return await emitError(result.error, null)
+		}
 
 		// If the server needs auth and OAuth is supported, attempt the full
 		// OAuth flow (browser redirect + callback) then retry the probe.
@@ -151,7 +157,10 @@ async function runProbe(args: string[]): Promise<number> {
 
 			// Retry probe after successful auth, reusing the same name so the
 			// token store has the credentials.
-			result = await withTimeout(manager.probeTools(definition, probeName), timeoutMs, timeoutMsg)
+			result = await withTimeout(manager.probeTools(probeName, definition), timeoutMs, timeoutMsg)
+			if (result.error) {
+				return await emitError(result.error, null)
+			}
 		}
 
 		const output: ProbeResult = {

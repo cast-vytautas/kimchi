@@ -621,7 +621,8 @@ try {
 
 		if (IS_ACP_MODE) {
 			const { runAcpMode } = await import("./modes/acp/server.js")
-			await runAcpMode({ extensionFactories, agentDir })
+			const { McpServerManager } = await import("./extensions/mcp-adapter/server-manager.js")
+			await runAcpMode({ extensionFactories, agentDir, mcpServerManager: new McpServerManager() })
 		} else {
 			// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 			const { main } = await import("@earendil-works/pi-coding-agent")
