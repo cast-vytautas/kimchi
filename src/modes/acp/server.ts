@@ -57,7 +57,6 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
-import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
@@ -85,6 +84,7 @@ import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { AVAILABLE_COMMANDS } from "./commands.js"
+import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 
