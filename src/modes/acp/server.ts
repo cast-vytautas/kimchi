@@ -57,7 +57,7 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
-import type { ProbeResult, ServerEntry } from "../../extensions/mcp-adapter/types.js"
+import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
@@ -646,24 +646,12 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-		if (method === AVAILABLE_METHODS.probeMcpServer) {
-			const result = await this.handleProbeMcpServer(params)
-			return { ...result }
+		switch (method) {
+			case AVAILABLE_METHODS.probeMcpServer:
+				return handleProbeMcpServer(this.mcpServerManager, params) as unknown as Record<string, unknown>
+			default:
+				throw RequestError.methodNotFound(method)
 		}
-		throw RequestError.methodNotFound(method)
-	}
-
-	private async handleProbeMcpServer(params: Record<string, unknown>): Promise<ProbeResult> {
-		if (!this.mcpServerManager) {
-			throw RequestError.invalidParams(undefined, "MCP server manager is not available")
-		}
-		const server = validateServerEntry(params.server)
-		// serverName is passed separately from the ServerEntry because ServerEntry
-		// itself has no name field — the name is the config key under
-		// `mcpServers` in the user's config. Desktop knows the key it's probing;
-		// we default to "probe" for ad-hoc calls.
-		const serverName = (params.serverName as string | undefined) ?? "probe"
-		return this.mcpServerManager.probeTools(serverName, server)
 	}
 
 	async shutdown(cause: "signal" | "disconnect" = "disconnect"): Promise<void> {
@@ -1645,70 +1633,6 @@ function toolResultContent(result: unknown): ToolCallContent[] {
 		}
 	}
 	return out
-}
-
-/**
- * Runtime validation for ServerEntry received over the ACP wire.
- *
- * The `_kimchi.dev/probeMcpServer` extMethod can be invoked by any ACP
- * client. Since ServerEntry can describe an arbitrary stdio command (command,
- * args, env, cwd) or HTTP endpoint, we must validate the shape before passing
- * it to McpServerManager.probeTools — otherwise a malicious client could
- * spawn processes with attacker-controlled arguments.
- *
- * This is a structural type guard, not a security policy: the ACP
- * connection is already a trusted channel (the client is the IDE that
- * launched the agent). The guard prevents accidental misuse and malformed
- * payloads, not adversarial code execution.
- */
-function validateServerEntry(raw: unknown): ServerEntry {
-	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-		throw RequestError.invalidParams(undefined, "'server' must be an object")
-	}
-	const obj = raw as Record<string, unknown>
-
-	// Must have exactly one of command or url
-	const hasCommand = typeof obj.command === "string" && obj.command.length > 0
-	const hasUrl = typeof obj.url === "string" && obj.url.length > 0
-	if (!hasCommand && !hasUrl) {
-		throw RequestError.invalidParams(undefined, "'server' must have a 'command' or 'url' field")
-	}
-
-	// Validate types of optional fields that probeTools/createTransport reads
-	if (obj.args !== undefined && !Array.isArray(obj.args)) {
-		throw RequestError.invalidParams(undefined, "'server.args' must be an array")
-	}
-	if (Array.isArray(obj.args)) {
-		for (const a of obj.args) {
-			if (typeof a !== "string") {
-				throw RequestError.invalidParams(undefined, "'server.args' must be an array of strings")
-			}
-		}
-	}
-	if (obj.env !== undefined && (typeof obj.env !== "object" || obj.env === null)) {
-		throw RequestError.invalidParams(undefined, "'server.env' must be an object")
-	}
-	if (obj.env !== undefined) {
-		for (const [k, v] of Object.entries(obj.env as Record<string, unknown>)) {
-			if (typeof v !== "string") {
-				throw RequestError.invalidParams(undefined, `server.env['${k}'] must be a string`)
-			}
-		}
-	}
-	if (obj.cwd !== undefined && typeof obj.cwd !== "string") {
-		throw RequestError.invalidParams(undefined, "'server.cwd' must be a string")
-	}
-	if (obj.headers !== undefined && (typeof obj.headers !== "object" || obj.headers === null)) {
-		throw RequestError.invalidParams(undefined, "'server.headers' must be an object")
-	}
-	if (obj.auth !== undefined && obj.auth !== "oauth" && obj.auth !== "bearer" && obj.auth !== false) {
-		throw RequestError.invalidParams(undefined, "'server.auth' must be 'oauth', 'bearer', or false")
-	}
-	if (obj.debug !== undefined && typeof obj.debug !== "boolean") {
-		throw RequestError.invalidParams(undefined, "'server.debug' must be a boolean")
-	}
-
-	return obj as ServerEntry
 }
 
 export async function runAcpMode(options: RunAcpOptions): Promise<void> {
