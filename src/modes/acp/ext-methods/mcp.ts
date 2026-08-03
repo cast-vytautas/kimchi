@@ -15,7 +15,7 @@ import type { ProbeResult, ServerEntry } from "../../../extensions/mcp-adapter/t
 /**
  * Runtime validation for ServerEntry received over the ACP wire.
  *
- * The `_kimchi.dev/probeMcpServer` extMethod can be invoked by any ACP
+ * The `_kimchi.dev/probe_mcp_server` extMethod can be invoked by any ACP
  * client. Since ServerEntry can describe an arbitrary stdio command (command,
  * args, env, cwd) or HTTP endpoint, we must validate the shape before passing
  * it to McpServerManager.probeTools — otherwise a malicious client could
@@ -77,7 +77,7 @@ export function validateServerEntry(raw: unknown): ServerEntry {
 }
 
 /**
- * Handler for the `_kimchi.dev/probeMcpServer` ACP extension method.
+ * Handler for the `_kimchi.dev/probe_mcp_server` ACP extension method.
  *
  * Validates the incoming ServerEntry, delegates to McpServerManager.probeTools()
  * (which creates a transient connection, calls tools/list, handles OAuth, and

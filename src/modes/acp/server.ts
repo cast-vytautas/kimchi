@@ -120,7 +120,7 @@ export interface RunAcpOptions {
 	/** Override for tests. Defaults to {@link defaultSessionLoader}. */
 	sessionLoader?: AcpSessionLoader
 	/**
-	 * MCP server manager used by the `_kimchi.dev/probeMcpServer` extMethod
+	 * MCP server manager used by the `_kimchi.dev/probe_mcp_server` extMethod
 	 * handler to create transient probe connections. Injected so tests can stub
 	 * it; production code constructs a real McpServerManager.
 	 */
@@ -226,7 +226,7 @@ export class KimchiAcpAgent implements Agent {
 				_meta: {
 					[CAPABILITIES_KEY]: {
 						...ADVERTISED_CAPABILITIES,
-						...(this.mcpServerManager ? {} : { probeMcpServer: false }),
+						...(this.mcpServerManager ? {} : { probe_mcp_server: false }),
 					},
 				},
 			},
@@ -647,7 +647,7 @@ export class KimchiAcpAgent implements Agent {
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
 		switch (method) {
-			case AVAILABLE_METHODS.probeMcpServer:
+			case AVAILABLE_METHODS.probe_mcp_server:
 				return handleProbeMcpServer(this.mcpServerManager, params) as unknown as Record<string, unknown>
 			default:
 				throw RequestError.methodNotFound(method)

@@ -21,7 +21,7 @@ import { getAuthEntry } from "../../extensions/mcp-adapter/mcp-auth.js"
 import { authenticate, getAuthStatus, supportsOAuth } from "../../extensions/mcp-adapter/mcp-auth-flow.js"
 
 // Minimal fake — we only need sessionId/subscribe/dispose/prompt/abort for the
-// ACP agent to accept a session. The probeMcpServer extMethod doesn't touch
+// ACP agent to accept a session. The probe_mcp_server extMethod doesn't touch
 // the session at all.
 class FakeAgentSession {
 	sessionId: string
@@ -75,8 +75,8 @@ function makeAgent(mcpServerManager?: McpServerManager): KimchiAcpAgent {
 	})
 }
 
-describe("KimchiAcpAgent extMethod probeMcpServer", () => {
-	it("routes _kimchi.dev/probeMcpServer to mcpServerManager.probeTools", async () => {
+describe("KimchiAcpAgent extMethod probe_mcp_server", () => {
+	it("routes _kimchi.dev/probe_mcp_server to mcpServerManager.probeTools", async () => {
 		const serverEntry: ServerEntry = { command: "echo", args: ["test"] }
 		const probeResult: ProbeResult = {
 			tools: [
@@ -89,7 +89,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer", () => {
 		const manager = makeFakeMcpServerManager(probeResult)
 		const agent = makeAgent(manager)
 
-		const result = await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
 			server: serverEntry,
 			serverName: "test-server",
 		})
@@ -108,7 +108,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer", () => {
 		const manager = makeFakeMcpServerManager(probeResult)
 		const agent = makeAgent(manager)
 
-		const result = (await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+		const result = (await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
 			server: serverEntry,
 		})) as unknown as ProbeResult
 
@@ -128,7 +128,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer", () => {
 		const manager = makeFakeMcpServerManager(probeResult)
 		const agent = makeAgent(manager)
 
-		const result = (await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+		const result = (await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
 			server: serverEntry,
 		})) as unknown as ProbeResult
 
@@ -144,7 +144,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer", () => {
 
 	it("throws invalidParams when server parameter is missing", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
-		await expect(agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {})).rejects.toMatchObject({ code: -32602 })
+		await expect(agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {})).rejects.toMatchObject({ code: -32602 })
 	})
 
 	it("throws invalidParams when mcpServerManager is not configured", async () => {
@@ -157,7 +157,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer", () => {
 			sessionFactory,
 		})
 		await expect(
-			agent.extMethod(AVAILABLE_METHODS.probeMcpServer, { server: { command: "echo" } }),
+			agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: { command: "echo" } }),
 		).rejects.toMatchObject({ code: -32602 })
 	})
 
@@ -167,7 +167,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer", () => {
 		const manager = makeFakeMcpServerManager(probeResult)
 		const agent = makeAgent(manager)
 
-		await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+		await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
 			server: serverEntry,
 		})
 
@@ -175,7 +175,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer", () => {
 	})
 })
 
-describe("KimchiAcpAgent extMethod probeMcpServer OAuth", () => {
+describe("KimchiAcpAgent extMethod probe_mcp_server OAuth", () => {
 	beforeEach(() => {
 		vi.mocked(supportsOAuth).mockReturnValue(false)
 		vi.mocked(authenticate).mockReset()
@@ -192,7 +192,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer OAuth", () => {
 		vi.mocked(authenticate).mockResolvedValue("authenticated" as never)
 
 		const agent = makeAgent(manager)
-		const result = await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
 			server: serverEntry,
 			serverName: "my-server",
 		})
@@ -211,7 +211,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer OAuth", () => {
 		vi.mocked(getAuthStatus).mockResolvedValue("authenticated")
 
 		const agent = makeAgent(manager)
-		const result = await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
 			server: serverEntry,
 			serverName: "my-server",
 		})
@@ -229,7 +229,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer OAuth", () => {
 		vi.mocked(authenticate).mockRejectedValue(new Error("Browser failed to open"))
 
 		const agent = makeAgent(manager)
-		const result = await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
 			server: serverEntry,
 			serverName: "my-server",
 		})
@@ -246,7 +246,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer OAuth", () => {
 		vi.mocked(supportsOAuth).mockReturnValue(true)
 
 		const agent = makeAgent(manager)
-		const result = await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
 			server: serverEntry,
 		})
 
@@ -256,52 +256,54 @@ describe("KimchiAcpAgent extMethod probeMcpServer OAuth", () => {
 	})
 })
 
-describe("KimchiAcpAgent extMethod probeMcpServer validation", () => {
+describe("KimchiAcpAgent extMethod probe_mcp_server validation", () => {
 	it("rejects non-object server param", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
-		await expect(agent.extMethod(AVAILABLE_METHODS.probeMcpServer, { server: "not-an-object" })).rejects.toMatchObject({
+		await expect(
+			agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: "not-an-object" }),
+		).rejects.toMatchObject({
 			code: -32602,
 		})
-		await expect(agent.extMethod(AVAILABLE_METHODS.probeMcpServer, { server: null })).rejects.toMatchObject({
+		await expect(agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: null })).rejects.toMatchObject({
 			code: -32602,
 		})
-		await expect(agent.extMethod(AVAILABLE_METHODS.probeMcpServer, { server: [] })).rejects.toMatchObject({
+		await expect(agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: [] })).rejects.toMatchObject({
 			code: -32602,
 		})
 	})
 
 	it("rejects server without command or url", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
-		await expect(agent.extMethod(AVAILABLE_METHODS.probeMcpServer, { server: {} })).rejects.toMatchObject({
+		await expect(agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: {} })).rejects.toMatchObject({
 			code: -32602,
 		})
 	})
 
 	it("rejects non-string command", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
-		await expect(agent.extMethod(AVAILABLE_METHODS.probeMcpServer, { server: { command: 123 } })).rejects.toMatchObject(
-			{ code: -32602 },
-		)
+		await expect(
+			agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: { command: 123 } }),
+		).rejects.toMatchObject({ code: -32602 })
 	})
 
 	it("rejects non-array args", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
 		await expect(
-			agent.extMethod(AVAILABLE_METHODS.probeMcpServer, { server: { command: "echo", args: "not-array" } }),
+			agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: { command: "echo", args: "not-array" } }),
 		).rejects.toMatchObject({ code: -32602 })
 	})
 
 	it("rejects non-string elements in args", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
 		await expect(
-			agent.extMethod(AVAILABLE_METHODS.probeMcpServer, { server: { command: "echo", args: ["ok", 42] } }),
+			agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: { command: "echo", args: ["ok", 42] } }),
 		).rejects.toMatchObject({ code: -32602 })
 	})
 
 	it("rejects env with non-string values", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
 		await expect(
-			agent.extMethod(AVAILABLE_METHODS.probeMcpServer, { server: { command: "echo", env: { KEY: 123 } } }),
+			agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, { server: { command: "echo", env: { KEY: 123 } } }),
 		).rejects.toMatchObject({ code: -32602 })
 	})
 
@@ -309,7 +311,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer validation", () => {
 		const probeResult: ProbeResult = { tools: [{ name: "tool1" }], needsAuth: false, error: null }
 		const manager = makeFakeMcpServerManager(probeResult)
 		const agent = makeAgent(manager)
-		const result = await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
 			server: { command: "echo", args: ["hello"], env: { FOO: "bar" } },
 		})
 		expect(result).toEqual(probeResult)
@@ -319,18 +321,18 @@ describe("KimchiAcpAgent extMethod probeMcpServer validation", () => {
 		const probeResult: ProbeResult = { tools: [{ name: "tool1" }], needsAuth: false, error: null }
 		const manager = makeFakeMcpServerManager(probeResult)
 		const agent = makeAgent(manager)
-		const result = await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+		const result = await agent.extMethod(AVAILABLE_METHODS.probe_mcp_server, {
 			server: { url: "https://mcp.example.com/sse" },
 		})
 		expect(result).toEqual(probeResult)
 	})
 })
 
-describe("probeMcpServer capability advertisement", () => {
-	it("advertises probeMcpServer in initialize response", async () => {
+describe("probe_mcp_server capability advertisement", () => {
+	it("advertises probe_mcp_server in initialize response", async () => {
 		const agent = makeAgent(makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null }))
 		const response = await agent.initialize({ protocolVersion: 1 })
 		const meta = response.agentCapabilities?._meta?.["kimchi.dev"] as Record<string, boolean> | undefined
-		expect(meta?.probeMcpServer).toBe(true)
+		expect(meta?.probe_mcp_server).toBe(true)
 	})
 })

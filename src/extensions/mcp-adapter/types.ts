@@ -27,7 +27,7 @@ export interface ProbeMcpTool {
 
 /**
  * Result of probing an MCP server for available tools.
- * Returned by McpServerManager.probeTools() and the _kimchi.dev/probeMcpServer
+ * Returned by McpServerManager.probeTools() and the _kimchi.dev/probe_mcp_server
  * ACP extMethod handler.
  */
 export interface ProbeResult {

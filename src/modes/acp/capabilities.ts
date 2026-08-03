@@ -9,7 +9,7 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 // become `[ACP]` agent_message_chunk diagnostics instead of method-not-found.
 //
 // Direction: pi_* methods are agent→client (agent calls conn.extMethod on
-// the client). probeMcpServer is the reverse — client→agent inbound (the
+// the client). probe_mcp_server is the reverse — client→agent inbound (the
 // agent's extMethod() handler receives it). It lives in the same map so the
 // capability advertisement and getClientSupportsMethod infrastructure is
 // shared, but ALL_PI_METHODS and getClientSupportsMethod are only meaningful
@@ -17,7 +17,7 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 export const AVAILABLE_METHODS = {
 	pi_notify: `_${CAPABILITIES_KEY}/pi_notify`,
 	pi_editor: `_${CAPABILITIES_KEY}/pi_editor`,
-	probeMcpServer: `_${CAPABILITIES_KEY}/probeMcpServer`,
+	probe_mcp_server: `_${CAPABILITIES_KEY}/probe_mcp_server`,
 } as const
 
 export type PiMethod = keyof typeof AVAILABLE_METHODS
