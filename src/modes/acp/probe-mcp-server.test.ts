@@ -10,12 +10,13 @@ import { type AcpSessionFactory, KimchiAcpAgent } from "./server.js"
 vi.mock("../../extensions/mcp-adapter/mcp-auth-flow.js", () => ({
 	supportsOAuth: vi.fn().mockReturnValue(false),
 	authenticate: vi.fn(),
+	getAuthStatus: vi.fn().mockResolvedValue("not_authenticated"),
 }))
 vi.mock("../../extensions/mcp-adapter/mcp-auth.js", () => ({
 	getAuthEntry: vi.fn().mockReturnValue(null),
 	removeAuthEntry: vi.fn(),
 }))
-import { supportsOAuth, authenticate } from "../../extensions/mcp-adapter/mcp-auth-flow.js"
+import { supportsOAuth, authenticate, getAuthStatus } from "../../extensions/mcp-adapter/mcp-auth-flow.js"
 import { getAuthEntry } from "../../extensions/mcp-adapter/mcp-auth.js"
 
 // Minimal fake — we only need sessionId/subscribe/dispose/prompt/abort for the
@@ -178,16 +179,15 @@ describe("KimchiAcpAgent extMethod probeMcpServer OAuth", () => {
 		vi.mocked(supportsOAuth).mockReturnValue(false)
 		vi.mocked(authenticate).mockReset()
 		vi.mocked(getAuthEntry).mockReturnValue(undefined)
+		vi.mocked(getAuthStatus).mockResolvedValue("not_authenticated")
 	})
 
-	it("attempts OAuth and retries probe when needsAuth is true for an OAuth-capable URL server", async () => {
+	it("authenticates before probing for an OAuth-capable URL server", async () => {
 		const serverEntry: ServerEntry = { url: "https://example.com/mcp" }
-		const needsAuthResult: ProbeResult = { tools: [], needsAuth: true, error: null }
 		const successResult: ProbeResult = { tools: [{ name: "tool1" }], needsAuth: false, error: null }
-		const manager = makeFakeMcpServerManager(needsAuthResult)
-		// Second call returns tools
-		vi.mocked(manager.probeTools).mockResolvedValueOnce(needsAuthResult).mockResolvedValueOnce(successResult)
+		const manager = makeFakeMcpServerManager(successResult)
 		vi.mocked(supportsOAuth).mockReturnValue(true)
+		vi.mocked(getAuthStatus).mockResolvedValue("not_authenticated")
 		vi.mocked(authenticate).mockResolvedValue("authenticated" as never)
 
 		const agent = makeAgent(manager)
@@ -199,14 +199,32 @@ describe("KimchiAcpAgent extMethod probeMcpServer OAuth", () => {
 		expect(result.tools).toHaveLength(1)
 		expect(result.needsAuth).toBe(false)
 		expect(vi.mocked(authenticate)).toHaveBeenCalledWith("my-server", "https://example.com/mcp", serverEntry)
-		expect(manager.probeTools).toHaveBeenCalledTimes(2)
+		expect(manager.probeTools).toHaveBeenCalledTimes(1)
+	})
+
+	it("skips authentication and probes directly when already authenticated", async () => {
+		const serverEntry: ServerEntry = { url: "https://example.com/mcp" }
+		const successResult: ProbeResult = { tools: [{ name: "tool1" }], needsAuth: false, error: null }
+		const manager = makeFakeMcpServerManager(successResult)
+		vi.mocked(supportsOAuth).mockReturnValue(true)
+		vi.mocked(getAuthStatus).mockResolvedValue("authenticated")
+
+		const agent = makeAgent(manager)
+		const result = await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+			server: serverEntry,
+			serverName: "my-server",
+		})
+
+		expect(result.tools).toHaveLength(1)
+		expect(vi.mocked(authenticate)).not.toHaveBeenCalled()
+		expect(manager.probeTools).toHaveBeenCalledTimes(1)
 	})
 
 	it("returns needsAuth with error message when authenticate fails", async () => {
 		const serverEntry: ServerEntry = { url: "https://example.com/mcp" }
-		const needsAuthResult: ProbeResult = { tools: [], needsAuth: true, error: null }
-		const manager = makeFakeMcpServerManager(needsAuthResult)
+		const manager = makeFakeMcpServerManager({ tools: [], needsAuth: false, error: null })
 		vi.mocked(supportsOAuth).mockReturnValue(true)
+		vi.mocked(getAuthStatus).mockResolvedValue("not_authenticated")
 		vi.mocked(authenticate).mockRejectedValue(new Error("Browser failed to open"))
 
 		const agent = makeAgent(manager)
@@ -217,7 +235,7 @@ describe("KimchiAcpAgent extMethod probeMcpServer OAuth", () => {
 
 		expect(result.needsAuth).toBe(true)
 		expect(result.error).toBe("Browser failed to open")
-		expect(manager.probeTools).toHaveBeenCalledTimes(1)
+		expect(manager.probeTools).not.toHaveBeenCalled()
 	})
 
 	it("does not attempt OAuth for a stdio server (no url)", async () => {

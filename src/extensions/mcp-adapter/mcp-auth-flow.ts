@@ -105,8 +105,10 @@ export async function startAuth(
 	// Pre-registered OAuth clients require an exact redirect URI, so enforce strict port binding.
 	await ensureCallbackServer({ strictPort: Boolean(config.clientId) })
 
-	// Generate and store OAuth state BEFORE creating the provider
-	// The SDK will call provider.state() to read this value
+	// Generate and store OAuth state BEFORE creating the provider.
+	// The SDK calls provider.state() (not saveState) to read the state when
+	// constructing the authorization URL — it expects the state to already
+	// be stored. We generate it here so it's available when the SDK needs it.
 	const oauthState = generateState()
 	await updateOAuthState(serverName, oauthState)
 
@@ -194,10 +196,15 @@ export async function authenticate(
 			return "authenticated"
 		}
 
-		// Get the state that was already generated and stored in startAuth()
-		const oauthState = await getOAuthState(serverName)
+		// Read the OAuth state stored by the SDK during startAuth().
+		// The SDK calls provider.saveState() during client.connect() when it
+		// initiates the authorization code flow. If the SDK didn't save a state
+		// (e.g. the UnauthorizedError was thrown before saveState was called),
+		// generate one ourselves so the callback can be validated.
+		let oauthState = await getOAuthState(serverName)
 		if (!oauthState) {
-			throw new Error("OAuth state not found - this should not happen")
+			oauthState = generateState()
+			await updateOAuthState(serverName, oauthState)
 		}
 
 		// Register the callback BEFORE opening the browser

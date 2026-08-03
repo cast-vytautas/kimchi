@@ -7,7 +7,7 @@
 
 import { randomUUID } from "node:crypto"
 import { RequestError } from "@agentclientprotocol/sdk"
-import { authenticate, supportsOAuth } from "../../../extensions/mcp-adapter/mcp-auth-flow.js"
+import { authenticate, getAuthStatus, supportsOAuth } from "../../../extensions/mcp-adapter/mcp-auth-flow.js"
 import { getAuthEntry, removeAuthEntry } from "../../../extensions/mcp-adapter/mcp-auth.js"
 import type { McpServerManager } from "../../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult, ServerEntry } from "../../../extensions/mcp-adapter/types.js"
@@ -108,27 +108,25 @@ export async function handleProbeMcpServer(
 	const usedThrowaway = probeName !== serverName
 
 	try {
-		let result = await mcpServerManager.probeTools(probeName, server)
-
-		// If the server needs auth and OAuth is supported, attempt the full
-		// OAuth flow (browser redirect + callback) then retry the probe.
-		// This mirrors the `kimchi mcp probe` CLI command's behavior so that
-		// Desktop's "Discover tools" button can complete OAuth inline.
-		if (result.needsAuth && supportsOAuth(server) && server.url) {
-			try {
-				await authenticate(probeName, server.url, server)
-			} catch (err) {
-				// Auth failed — return needsAuth with the error message so
-				// the UI can display it.
-				const message = err instanceof Error ? err.message : String(err)
-				return { tools: [], needsAuth: true, error: message }
+		// For OAuth-capable URL servers, authenticate FIRST before probing.
+		// probeTools creates its own transport internally, which triggers the
+		// SDK's auth flow — if it runs before authenticate(), the state gets
+		// overwritten and the callback fails. By authenticating first, the
+		// stored tokens are available when probeTools connects, so it skips
+		// auth entirely.
+		if (supportsOAuth(server) && server.url) {
+			const authStatus = await getAuthStatus(probeName)
+			if (authStatus !== "authenticated") {
+				try {
+					await authenticate(probeName, server.url, server)
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err)
+					return { tools: [], needsAuth: true, error: message }
+				}
 			}
-
-			// Retry probe after successful auth.
-			result = await mcpServerManager.probeTools(probeName, server)
 		}
 
-		return result
+		return await mcpServerManager.probeTools(probeName, server)
 	} finally {
 		// Clean up throwaway probe credentials so the token store never
 		// accumulates `__probe_*` entries.
