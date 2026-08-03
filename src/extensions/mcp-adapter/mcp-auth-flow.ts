@@ -101,9 +101,12 @@ export async function startAuth(
 		}
 	}
 
-	// Start the callback server.
-	// Pre-registered OAuth clients require an exact redirect URI, so enforce strict port binding.
-	await ensureCallbackServer({ strictPort: Boolean(config.clientId) })
+	// Start the callback server with strict port binding. The redirect URI
+	// is tied to the port — if the port changes between registrations, the
+	// OAuth server rejects the callback with "redirect_uri not registered".
+	// Always use the default port (19876) so dynamic client registration
+	// stays consistent across attempts.
+	await ensureCallbackServer({ strictPort: true })
 
 	// Generate and store OAuth state BEFORE creating the provider.
 	// The SDK calls provider.state() (not saveState) to read the state when
