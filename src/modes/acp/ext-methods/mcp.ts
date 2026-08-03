@@ -7,8 +7,8 @@
 
 import { randomUUID } from "node:crypto"
 import { RequestError } from "@agentclientprotocol/sdk"
-import { authenticate, getAuthStatus, supportsOAuth } from "../../../extensions/mcp-adapter/mcp-auth-flow.js"
 import { getAuthEntry, removeAuthEntry } from "../../../extensions/mcp-adapter/mcp-auth.js"
+import { authenticate, getAuthStatus, supportsOAuth } from "../../../extensions/mcp-adapter/mcp-auth-flow.js"
 import type { McpServerManager } from "../../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult, ServerEntry } from "../../../extensions/mcp-adapter/types.js"
 

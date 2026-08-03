@@ -16,8 +16,9 @@ vi.mock("../../extensions/mcp-adapter/mcp-auth.js", () => ({
 	getAuthEntry: vi.fn().mockReturnValue(null),
 	removeAuthEntry: vi.fn(),
 }))
-import { supportsOAuth, authenticate, getAuthStatus } from "../../extensions/mcp-adapter/mcp-auth-flow.js"
+
 import { getAuthEntry } from "../../extensions/mcp-adapter/mcp-auth.js"
+import { authenticate, getAuthStatus, supportsOAuth } from "../../extensions/mcp-adapter/mcp-auth-flow.js"
 
 // Minimal fake — we only need sessionId/subscribe/dispose/prompt/abort for the
 // ACP agent to accept a session. The probeMcpServer extMethod doesn't touch
