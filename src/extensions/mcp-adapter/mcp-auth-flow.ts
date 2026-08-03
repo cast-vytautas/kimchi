@@ -199,15 +199,14 @@ export async function authenticate(
 			return "authenticated"
 		}
 
-		// Read the OAuth state stored by the SDK during startAuth().
-		// The SDK calls provider.saveState() during client.connect() when it
-		// initiates the authorization code flow. If the SDK didn't save a state
-		// (e.g. the UnauthorizedError was thrown before saveState was called),
-		// generate one ourselves so the callback can be validated.
-		let oauthState = await getOAuthState(serverName)
+		// Read the OAuth state stored by startAuth() (line ~107) and/or
+		// by the SDK via provider.saveState() during client.connect().
+		// At least one of these paths always saves state before we reach
+		// here — startAuth() pre-generates it, and provider.state()
+		// auto-generates if missing — so this is always defined.
+		const oauthState = await getOAuthState(serverName)
 		if (!oauthState) {
-			oauthState = generateState()
-			await updateOAuthState(serverName, oauthState)
+			throw new Error("OAuth state was not saved during startAuth")
 		}
 
 		// Register the callback BEFORE opening the browser
@@ -337,10 +336,21 @@ export async function getValidToken(serverName: string, serverUrl: string): Prom
 /**
  * Check the authentication status for a server.
  *
+ * If `serverUrl` is provided, stored tokens are validated against it —
+ * tokens saved for a different URL are treated as not_authenticated
+ * so the caller can re-authenticate.
+ *
  * @param serverName - The name of the MCP server
+ * @param serverUrl - Optional URL to validate stored tokens against
  * @returns The current auth status
  */
-export async function getAuthStatus(serverName: string): Promise<AuthStatus> {
+export async function getAuthStatus(serverName: string, serverUrl?: string): Promise<AuthStatus> {
+	if (serverUrl) {
+		const entry = getAuthForUrl(serverName, serverUrl)
+		if (!entry?.tokens) return "not_authenticated"
+		const expired = isTokenExpired(serverName)
+		return expired ? "expired" : "authenticated"
+	}
 	const hasTokens = await hasStoredTokens(serverName)
 	if (!hasTokens) return "not_authenticated"
 

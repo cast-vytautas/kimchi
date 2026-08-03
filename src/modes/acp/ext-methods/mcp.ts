@@ -115,7 +115,7 @@ export async function handleProbeMcpServer(
 		// stored tokens are available when probeTools connects, so it skips
 		// auth entirely.
 		if (supportsOAuth(server) && server.url) {
-			const authStatus = await getAuthStatus(probeName)
+			const authStatus = await getAuthStatus(probeName, server.url)
 			if (authStatus !== "authenticated") {
 				try {
 					await authenticate(probeName, server.url, server)
