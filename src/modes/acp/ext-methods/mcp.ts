@@ -5,7 +5,10 @@
 // the dependencies it needs (manager, params) and returns a plain record
 // suitable for the ACP wire.
 
+import { randomUUID } from "node:crypto"
 import { RequestError } from "@agentclientprotocol/sdk"
+import { authenticate, supportsOAuth } from "../../../extensions/mcp-adapter/mcp-auth-flow.js"
+import { getAuthEntry, removeAuthEntry } from "../../../extensions/mcp-adapter/mcp-auth.js"
 import type { McpServerManager } from "../../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult, ServerEntry } from "../../../extensions/mcp-adapter/types.js"
 
@@ -96,5 +99,57 @@ export async function handleProbeMcpServer(
 	// `mcpServers` in the user's config. Desktop knows the key it's probing;
 	// we default to "probe" for ad-hoc calls.
 	const serverName = (params.serverName as string | undefined) ?? "probe"
-	return mcpServerManager.probeTools(serverName, server)
+
+	// Resolve the OAuth token-store key. If an auth entry already exists
+	// under `serverName` for a *different* URL (e.g. the user edited the
+	// URL but kept the name), use a throwaway name so the real server's
+	// stored tokens are never overwritten. See `resolveProbeName` below.
+	const probeName = resolveProbeName(serverName, server)
+	const usedThrowaway = probeName !== serverName
+
+	try {
+		let result = await mcpServerManager.probeTools(probeName, server)
+
+		// If the server needs auth and OAuth is supported, attempt the full
+		// OAuth flow (browser redirect + callback) then retry the probe.
+		// This mirrors the `kimchi mcp probe` CLI command's behavior so that
+		// Desktop's "Discover tools" button can complete OAuth inline.
+		if (result.needsAuth && supportsOAuth(server) && server.url) {
+			try {
+				await authenticate(probeName, server.url, server)
+			} catch (err) {
+				// Auth failed — return needsAuth with the error message so
+				// the UI can display it.
+				const message = err instanceof Error ? err.message : String(err)
+				return { tools: [], needsAuth: true, error: message }
+			}
+
+			// Retry probe after successful auth.
+			result = await mcpServerManager.probeTools(probeName, server)
+		}
+
+		return result
+	} finally {
+		// Clean up throwaway probe credentials so the token store never
+		// accumulates `__probe_*` entries.
+		if (usedThrowaway) {
+			removeAuthEntry(probeName)
+		}
+	}
+}
+
+/**
+ * Decide which name to use as the OAuth token-store key during a probe.
+ *
+ * If an auth entry already exists under `name` for a *different* URL —
+ * e.g. the user edited the server's URL but kept the name — fall back to
+ * a throwaway `__probe_*` name so the real server's tokens are never
+ * overwritten. When no entry exists (new server) or the URL matches
+ * (repeat probe), the real name is used so stored tokens are found.
+ */
+function resolveProbeName(name: string, definition: ServerEntry): string {
+	const existing = getAuthEntry(name)
+	if (!existing) return name
+	if (existing.serverUrl === definition.url) return name
+	return `__probe_${randomUUID()}`
 }

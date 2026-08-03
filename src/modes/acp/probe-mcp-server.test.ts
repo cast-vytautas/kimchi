@@ -1,10 +1,22 @@
 import type { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult, ServerEntry } from "../../extensions/mcp-adapter/types.js"
 import { AVAILABLE_METHODS } from "./capabilities.js"
 import { type AcpSessionFactory, KimchiAcpAgent } from "./server.js"
+
+// Mock the auth flow and auth store so tests don't touch real disk state.
+vi.mock("../../extensions/mcp-adapter/mcp-auth-flow.js", () => ({
+	supportsOAuth: vi.fn().mockReturnValue(false),
+	authenticate: vi.fn(),
+}))
+vi.mock("../../extensions/mcp-adapter/mcp-auth.js", () => ({
+	getAuthEntry: vi.fn().mockReturnValue(null),
+	removeAuthEntry: vi.fn(),
+}))
+import { supportsOAuth, authenticate } from "../../extensions/mcp-adapter/mcp-auth-flow.js"
+import { getAuthEntry } from "../../extensions/mcp-adapter/mcp-auth.js"
 
 // Minimal fake — we only need sessionId/subscribe/dispose/prompt/abort for the
 // ACP agent to accept a session. The probeMcpServer extMethod doesn't touch
@@ -158,6 +170,70 @@ describe("KimchiAcpAgent extMethod probeMcpServer", () => {
 		})
 
 		expect(manager.probeTools).toHaveBeenCalledWith("probe", serverEntry)
+	})
+})
+
+describe("KimchiAcpAgent extMethod probeMcpServer OAuth", () => {
+	beforeEach(() => {
+		vi.mocked(supportsOAuth).mockReturnValue(false)
+		vi.mocked(authenticate).mockReset()
+		vi.mocked(getAuthEntry).mockReturnValue(undefined)
+	})
+
+	it("attempts OAuth and retries probe when needsAuth is true for an OAuth-capable URL server", async () => {
+		const serverEntry: ServerEntry = { url: "https://example.com/mcp" }
+		const needsAuthResult: ProbeResult = { tools: [], needsAuth: true, error: null }
+		const successResult: ProbeResult = { tools: [{ name: "tool1" }], needsAuth: false, error: null }
+		const manager = makeFakeMcpServerManager(needsAuthResult)
+		// Second call returns tools
+		vi.mocked(manager.probeTools).mockResolvedValueOnce(needsAuthResult).mockResolvedValueOnce(successResult)
+		vi.mocked(supportsOAuth).mockReturnValue(true)
+		vi.mocked(authenticate).mockResolvedValue("authenticated" as never)
+
+		const agent = makeAgent(manager)
+		const result = await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+			server: serverEntry,
+			serverName: "my-server",
+		})
+
+		expect(result.tools).toHaveLength(1)
+		expect(result.needsAuth).toBe(false)
+		expect(vi.mocked(authenticate)).toHaveBeenCalledWith("my-server", "https://example.com/mcp", serverEntry)
+		expect(manager.probeTools).toHaveBeenCalledTimes(2)
+	})
+
+	it("returns needsAuth with error message when authenticate fails", async () => {
+		const serverEntry: ServerEntry = { url: "https://example.com/mcp" }
+		const needsAuthResult: ProbeResult = { tools: [], needsAuth: true, error: null }
+		const manager = makeFakeMcpServerManager(needsAuthResult)
+		vi.mocked(supportsOAuth).mockReturnValue(true)
+		vi.mocked(authenticate).mockRejectedValue(new Error("Browser failed to open"))
+
+		const agent = makeAgent(manager)
+		const result = await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+			server: serverEntry,
+			serverName: "my-server",
+		})
+
+		expect(result.needsAuth).toBe(true)
+		expect(result.error).toBe("Browser failed to open")
+		expect(manager.probeTools).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not attempt OAuth for a stdio server (no url)", async () => {
+		const serverEntry: ServerEntry = { command: "echo", args: [] }
+		const needsAuthResult: ProbeResult = { tools: [], needsAuth: true, error: null }
+		const manager = makeFakeMcpServerManager(needsAuthResult)
+		vi.mocked(supportsOAuth).mockReturnValue(true)
+
+		const agent = makeAgent(manager)
+		const result = await agent.extMethod(AVAILABLE_METHODS.probeMcpServer, {
+			server: serverEntry,
+		})
+
+		expect(result.needsAuth).toBe(true)
+		expect(vi.mocked(authenticate)).not.toHaveBeenCalled()
+		expect(manager.probeTools).toHaveBeenCalledTimes(1)
 	})
 })
 
