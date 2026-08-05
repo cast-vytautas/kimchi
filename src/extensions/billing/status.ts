@@ -62,8 +62,10 @@ interface BillingApiConfig {
 interface RefreshBillingStatusOptions {
 	fetch?: typeof fetch
 	jsonTimeoutMs?: number
-	loadConfig?: typeof loadConfig
+	loadConfig?: () => Pick<ReturnType<typeof loadConfig>, "apiKey" | "llmEndpoint">
 	requestTimeoutMs?: number
+	/** "automatic" = coalesced + throttled (completion hook); "forced" = bypasses TTL (manual command, login). Defaults to "forced". */
+	mode?: BillingRefreshMode
 }
 
 export const LOW_CREDITS_THRESHOLD_USD = 5
@@ -125,6 +127,11 @@ export function configureBillingCreditsApi(options: { apiKey?: string; llmEndpoi
 		latestBillingRefreshId++
 		latestBudgetRefreshId++
 		clearBillingStatus()
+		// Invalidate the coalesced in-flight refresh and reset the throttle —
+		// a credential change makes any pending fetch stale and should allow
+		// the next completion to trigger a fresh automatic refresh.
+		inFlightRefresh = undefined
+		lastRefreshAt = 0
 	}
 }
 
@@ -222,15 +229,67 @@ export async function refreshBillingSnapshot(
 	return currentBillingStatus
 }
 
+export type BillingRefreshMode = "automatic" | "forced"
+
+/** Minimum interval between automatic billing refreshes (completion hook). */
+export const AUTOMATIC_REFRESH_MIN_INTERVAL_MS = 30_000
+
+/** One shared in-flight refresh promise per process — coalesces concurrent callers. */
+let inFlightRefresh: Promise<BillingStatus | undefined> | undefined
+
+/** Timestamp of the last completed refresh (automatic or forced). */
+let lastRefreshAt = 0
+
 export async function refreshBillingStatusFromConfig(
 	options: RefreshBillingStatusOptions = {},
 ): Promise<BillingStatus | undefined> {
+	const mode: BillingRefreshMode = options.mode ?? "forced"
+
+	// Automatic mode: skip before loading config if we refreshed recently.
+	// If a forced refresh is already running, share it so callers still receive
+	// the newest snapshot without repeating synchronous config reads.
+	if (mode === "automatic" && Date.now() - lastRefreshAt < AUTOMATIC_REFRESH_MIN_INTERVAL_MS) {
+		return inFlightRefresh ?? currentBillingStatus
+	}
+
+	// Always sync credentials from config before checking coalescing state.
+	// Forced callers (login, API-key change) must update the billing API
+	// configuration even when an automatic refresh is already running —
+	// configureBillingCreditsApi invalidates any stale in-flight fetch via
+	// generation bump when credentials actually change.
 	try {
 		const config = (options.loadConfig ?? loadConfig)()
 		configureBillingCreditsApi({ apiKey: config.apiKey, llmEndpoint: config.llmEndpoint })
-		return await refreshBillingSnapshot(options)
-	} catch {
+	} catch (error) {
+		console.warn("[billing] failed to load config for billing refresh:", error)
 		return undefined
+	}
+
+	// Coalesce: if a refresh is already in flight, share it regardless of mode.
+	if (inFlightRefresh) return inFlightRefresh
+
+	const promise = (async () => {
+		try {
+			return await refreshBillingSnapshot(options)
+		} catch (error) {
+			console.warn("[billing] billing refresh failed:", error)
+			return undefined
+		}
+	})()
+
+	inFlightRefresh = promise
+	try {
+		const result = await promise
+		// Only bump the throttle timestamp for automatic refreshes that are
+		// still the active in-flight refresh. Forced refreshes (login, manual
+		// command) must not extend the automatic cooldown — otherwise the
+		// first post-completion automatic refresh would be throttled by the
+		// startup forced refresh. The identity guard also skips stale
+		// resolutions invalidated by configureBillingCreditsApi.
+		if (mode === "automatic" && inFlightRefresh === promise) lastRefreshAt = Date.now()
+		return result
+	} finally {
+		if (inFlightRefresh === promise) inFlightRefresh = undefined
 	}
 }
 

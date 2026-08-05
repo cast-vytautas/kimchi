@@ -504,7 +504,8 @@ try {
 
 		installGlobalFetchInstrumentation({
 			userAgent: `kimchi/${getVersion()}`,
-			onModelCompletionSettled: (originalFetch) => refreshBillingStatusFromConfig({ fetch: originalFetch }),
+			onModelCompletionSettled: (originalFetch) =>
+				refreshBillingStatusFromConfig({ fetch: originalFetch, mode: "automatic" }),
 		})
 
 		const interactiveStartupContext = {
