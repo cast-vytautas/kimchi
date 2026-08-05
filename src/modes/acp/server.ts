@@ -57,6 +57,7 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
+import type { ProbeResult } from "../../extensions/mcp-adapter/types.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
@@ -82,9 +83,10 @@ import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
-import { ADVERTISED_CAPABILITIES, AVAILABLE_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
+import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
+import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 
@@ -251,6 +253,9 @@ export class KimchiAcpAgent implements Agent {
 		for (const s of piSessions) {
 			if (seen.has(s.id)) continue
 			seen.add(s.id)
+			// Skip subagent sessions: pi marks forked sessions with parentSessionPath
+			// so delegated Agent runs don't clutter the user's session list.
+			if (s.parentSessionPath) continue
 			sessions.push(toAcpSessionInfo(s))
 		}
 		// Sort newest-first by updatedAt so Zed's picker surfaces recent threads
@@ -651,8 +656,12 @@ export class KimchiAcpAgent implements Agent {
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
 		switch (method) {
-			case AVAILABLE_METHODS.probe_mcp_server:
-				return handleProbeMcpServer(this.mcpServerManager, params) as unknown as Record<string, unknown>
+			case AVAILABLE_EXT_METHODS.probe_mcp_server: {
+				const result = await handleProbeMcpServer(this.mcpServerManager, params)
+				return result as Record<keyof ProbeResult, unknown>
+			}
+			case AVAILABLE_EXT_METHODS.set_session_title:
+				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
 			default:
 				throw RequestError.methodNotFound(method)
 		}
