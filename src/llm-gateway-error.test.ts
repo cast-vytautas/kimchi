@@ -252,6 +252,16 @@ describe("classifyLLMGatewayError", () => {
 			httpStatusCode: 400,
 		},
 		{
+			name: "provider content_filter finish reason",
+			message: "Provider finish_reason: content_filter",
+			reason: "content_filter",
+		},
+		{
+			name: "content filter variant",
+			message: "Response filtered by content filter policy",
+			reason: "content_filter",
+		},
+		{
 			name: "bad request with hosted vLLM transport wording",
 			message: "BadRequestError: Hosted_vllmException - error sending request, code 400",
 			reason: "bad_request",
@@ -290,6 +300,8 @@ describe("classifyLLMGatewayError", () => {
 		"model returned 500 tokens before stopping",
 		"tool call unexpectedly missing argument",
 		"model response terminated by safety policy",
+		"response was filtered by the content policy",
+		"content was filtered for safety reasons",
 	])("ignores non-gateway provider verdicts: %s", (message) => {
 		expect(classifyLLMGatewayError(message)).toBeUndefined()
 	})
