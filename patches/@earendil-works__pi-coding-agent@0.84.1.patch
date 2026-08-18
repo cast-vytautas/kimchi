@@ -1,12 +1,3 @@
-# Patch: Kimchi runtime and UI integrations for pi-coding-agent 0.84.1
-#
-# Tracking: LLM-2564. No matching upstream issue exists yet; report remaining
-# generic changes to https://github.com/earendil-works/pi before the next upgrade.
-# Retains Kimchi CLI/provider defaults, extension-triggered prompt handling,
-# forced compaction, model selection, extension UI helpers, and compact visuals.
-# Removal: delete each hunk once the pinned Pi release exposes equivalent APIs
-# or Kimchi no longer needs the branded behavior.
-#
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index e66b528fe676bd24ee5ad95abaa6201418850678..a15fe8267bfe863a8becaadc0f894ace5db70767 100644
 --- a/dist/cli/args.js
@@ -169,8 +160,141 @@ index 7d93ba62bdb5d47e129751e8075cbb34620322ad..89c8147bdfcd8ce91ea6a51ea4822c81
              .map((provider) => provider.id === "radius"
              ? provider
              : withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt));
+diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
+index e69e4d7f2dadbd68982feddfae45432fa197a286..39d0cd12e20815019534ee6b304f3813433a5561 100644
+--- a/dist/core/session-manager.js
++++ b/dist/core/session-manager.js
+@@ -1,6 +1,14 @@
+ import { uuidv7 } from "@earendil-works/pi-ai";
+ import { randomUUID } from "crypto";
+ import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readdirSync, readSync, statSync, writeFileSync, } from "fs";
++function smLog(...args) {
++    try {
++        appendFileSync("/tmp/kimchi-session-manager.log", `[${new Date().toISOString()}] ${process.pid} ${args.join(" ")}\n`);
++    }
++    catch {
++        // ignore
++    }
++}
+ import { readdir, stat } from "fs/promises";
+ import { join, resolve } from "path";
+ import { createInterface } from "readline";
+@@ -615,6 +623,11 @@ export class SessionManager {
+         this.sessionFile = resolvePath(sessionFile);
+         if (existsSync(this.sessionFile)) {
+             this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
++            const stats = statSync(this.sessionFile);
++            this._lastFileSize = stats.size;
++            this._lastFileMtime = stats.mtimeMs;
++            const msgCount = this.fileEntries.filter((e) => e.type === "message").length;
++            smLog(`[SessionManager] _setSessionFile loaded ${this.fileEntries.length} entries (${msgCount} messages) from ${this.sessionFile} (size=${stats.size}, mtimeMs=${stats.mtimeMs})`);
+             // If file was empty, initialize it with a valid session header. If it was
+             // non-empty but did not parse as a pi session, fail without modifying it.
+             if (this.fileEntries.length === 0) {
+@@ -662,6 +675,8 @@ export class SessionManager {
+         this.labelTimestampsById.clear();
+         this.leafId = null;
+         this.flushed = false;
++        this._lastFileSize = undefined;
++        this._lastFileMtime = undefined;
+         if (this.persist) {
+             const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+             this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
+@@ -690,6 +705,48 @@ export class SessionManager {
+             }
+         }
+     }
++    /**
++     * Re-read the session file from disk if another writer may have appended
++     * entries since we loaded. This prevents concurrent CLI/ACP writers from
++     * forking history by appending against a stale leafId.
++     */
++    _refreshFromDisk() {
++        if (!this.persist || !this.sessionFile || !this.flushed || !existsSync(this.sessionFile)) {
++            console.error(`[SessionManager] _refreshFromDisk skip persist=${this.persist} file=${this.sessionFile} flushed=${this.flushed} exists=${existsSync(this.sessionFile)}`);
++            return;
++        }
++        let stats;
++        try {
++            stats = statSync(this.sessionFile);
++        }
++        catch {
++            return;
++        }
++        smLog(`[SessionManager] _refreshFromDisk lastSize=${this._lastFileSize} lastMtime=${this._lastFileMtime} size=${stats.size} mtime=${stats.mtimeMs}`);
++        if (this._lastFileSize === stats.size && this._lastFileMtime === stats.mtimeMs) {
++            smLog(`[SessionManager] _refreshFromDisk unchanged`);
++            return;
++        }
++        const fileEntries = loadEntriesFromFile(this.sessionFile);
++        const msgCount = fileEntries.filter((e) => e.type === "message").length;
++        smLog(`[SessionManager] _refreshFromDisk reloaded ${fileEntries.length} entries (${msgCount} messages)`);
++        if (fileEntries.length === 0) {
++            return;
++        }
++        const header = fileEntries.find((e) => e.type === "session");
++        if (!header || header.id !== this.sessionId) {
++            return;
++        }
++        this.fileEntries = fileEntries;
++        if (migrateToCurrentVersion(this.fileEntries)) {
++            this._rewriteFile();
++        }
++        this._buildIndex();
++        this._lastFileSize = stats.size;
++        this._lastFileMtime = stats.mtimeMs;
++        const leafMsg = this.leafId ? this.byId.get(this.leafId) : undefined;
++        smLog(`[SessionManager] _refreshFromDisk new leafId=${this.leafId} type=${leafMsg?.type}`);
++    }
+     _rewriteFile() {
+         if (!this.persist || !this.sessionFile)
+             return;
+@@ -733,6 +790,7 @@ export class SessionManager {
+                 // Mark as not flushed so when assistant arrives, all entries get written
+                 this.flushed = false;
+             }
++            this._updateFileStats();
+             return;
+         }
+         if (!this.flushed) {
+@@ -750,12 +808,35 @@ export class SessionManager {
+         else {
+             appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+         }
++        this._updateFileStats();
++    }
++    _updateFileStats() {
++        if (!this.sessionFile)
++            return;
++        try {
++            const stats = statSync(this.sessionFile);
++            this._lastFileSize = stats.size;
++            this._lastFileMtime = stats.mtimeMs;
++        }
++        catch {
++            // ignore
++        }
+     }
+     _appendEntry(entry) {
++        const previousLeafId = this.leafId;
++        smLog(`[SessionManager] _appendEntry before refresh leafId=${this.leafId} type=${entry.type}`);
++        this._refreshFromDisk();
++        if (this.leafId !== previousLeafId) {
++            // Another writer appended to the file while we were idle. Re-parent
++            // the new entry to the actual latest leaf so we do not fork history.
++            entry.parentId = this.leafId;
++        }
++        smLog(`[SessionManager] _appendEntry after refresh leafId=${this.leafId} parentId=${entry.parentId}`);
+         this.fileEntries.push(entry);
+         this.byId.set(entry.id, entry);
+         this.leafId = entry.id;
+         this._persist(entry);
++        smLog(`[SessionManager] _appendEntry persisted leafId=${this.leafId}`);
+     }
+     /** Append a message as child of current leaf, then advance leaf. Returns entry id.
+      * Does not allow writing CompactionSummaryMessage and BranchSummaryMessage directly.
 diff --git a/dist/core/tools/bash.js b/dist/core/tools/bash.js
-index f274908793624a5870008ab738fa19ac6758165c..320acfb56155b8d9711b423824350b7630b8e8cb 100644
+index f274908793624a5870008ab738fa19ac6758165c..bdee7b8122c1986aa5729945f044e83c4e927323 100644
 --- a/dist/core/tools/bash.js
 +++ b/dist/core/tools/bash.js
 @@ -81,6 +81,12 @@ export function createLocalBashOperations(options) {
