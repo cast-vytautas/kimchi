@@ -19,6 +19,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text, truncateToWidth } from "@earendil-works/pi-tui"
 import { type Static, Type } from "typebox"
 
+import { withBlocked } from "../herdr-events.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { withWorkingHidden } from "../ui.js"
 import { promptQuestionnaireFallback, type QuestionnaireResult } from "./questionnaire-fallback.js"
@@ -215,20 +216,19 @@ export default function questionnaireExtension(pi: ExtensionAPI): void {
 				)
 			}
 
-			if (pi.events?.emit) {
-				pi.events.emit("notification", { notification_type: "agent_needs_input" })
-			}
+			pi.events.emit("notification", { notification_type: "agent_needs_input" })
 
-			let result: QuestionnaireResult
-			if (ctx.mode !== "tui") {
-				result = await promptQuestionnaireFallback(ctx.ui, questions)
-			} else {
-				result = await withWorkingHidden(ctx, () =>
-					ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
-						createQuestionForm(tui, theme, questions, { title: params.header }, done),
-					),
-				)
-			}
+			// Static label (see herdr-events.ts Privacy): params.header is
+			// agent-generated and may embed question text.
+			const result = await withBlocked(pi.events, "Questionnaire", () =>
+				ctx.mode !== "tui"
+					? promptQuestionnaireFallback(ctx.ui, questions)
+					: withWorkingHidden(ctx, () =>
+							ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) =>
+								createQuestionForm(tui, theme, questions, { title: params.header }, done),
+							),
+						),
+			)
 
 			if (result.cancelled) {
 				return {
