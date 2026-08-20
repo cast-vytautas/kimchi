@@ -118,9 +118,8 @@ describe("McpServerManager.probeTools", () => {
 		expect(result.tools).toEqual([])
 		expect(result.needsAuth).toBe(true)
 		expect(result.error).toBeNull()
-		// client.close is NOT called here because the UnauthorizedError is thrown
-		// during createTransport (createHttpTransport's internal test client),
-		// before probeTools' own client is connected — so there's nothing to close.
+		// UnauthorizedError skips the SSE fallback and returns needsAuth directly.
+		// The finally block closes the client and transport.
 	})
 
 	it("returns error string when connect throws a non-OAuth error", async () => {
