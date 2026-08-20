@@ -103,11 +103,7 @@ export class McpServerManager {
 
 		try {
 			transport = await this.createTransport(name, definition)
-			await client.connect(transport)
-			this.attachAdapterNotificationHandlers(name, client)
-
-			// Discover tools and resources
-			const [tools, resources] = await Promise.all([this.fetchAllTools(client), this.fetchAllResources(client)])
+			const { tools, resources } = await this.connectAndDiscover(client, transport, name)
 
 			return {
 				client,
@@ -127,16 +123,7 @@ export class McpServerManager {
 
 				if (!transport) throw error
 
-				return {
-					client,
-					transport,
-					definition,
-					tools: [],
-					resources: [],
-					lastUsedAt: Date.now(),
-					inFlight: 0,
-					status: "needs-auth",
-				}
+				return this.buildNeedsAuthConnection(client, transport, definition)
 			}
 
 			// SSE fallback for HTTP servers: if StreamableHTTP connect fails with a
@@ -148,10 +135,7 @@ export class McpServerManager {
 				client = new Client({ name: `pi-mcp-${name}`, version: "1.0.0" })
 
 				try {
-					await client.connect(transport)
-					this.attachAdapterNotificationHandlers(name, client)
-
-					const [tools, resources] = await Promise.all([this.fetchAllTools(client), this.fetchAllResources(client)])
+					const { tools, resources } = await this.connectAndDiscover(client, transport, name)
 
 					return {
 						client,
@@ -167,16 +151,7 @@ export class McpServerManager {
 					if (sseError instanceof UnauthorizedError && supportsOAuth(definition)) {
 						await client.close().catch(() => {})
 						await transport.close().catch(() => {})
-						return {
-							client,
-							transport,
-							definition,
-							tools: [],
-							resources: [],
-							lastUsedAt: Date.now(),
-							inFlight: 0,
-							status: "needs-auth",
-						}
+						return this.buildNeedsAuthConnection(client, transport, definition)
 					}
 					await client.close().catch(() => {})
 					await transport.close().catch(() => {})
@@ -187,6 +162,41 @@ export class McpServerManager {
 			await client.close().catch(() => {})
 			await transport?.close().catch(() => {})
 			throw error
+		}
+	}
+
+	/**
+	 * Connect a client to a transport and fetch tools + resources.
+	 * Shared by createConnection() for both StreamableHTTP and SSE attempts.
+	 */
+	private async connectAndDiscover(
+		client: Client,
+		transport: Transport,
+		name: string,
+	): Promise<{ tools: McpTool[]; resources: McpResource[] }> {
+		await client.connect(transport)
+		this.attachAdapterNotificationHandlers(name, client)
+		const [tools, resources] = await Promise.all([this.fetchAllTools(client), this.fetchAllResources(client)])
+		return { tools, resources }
+	}
+
+	/**
+	 * Build a ServerConnection in the needs-auth state.
+	 */
+	private buildNeedsAuthConnection(
+		client: Client,
+		transport: Transport,
+		definition: ServerDefinition,
+	): ServerConnection {
+		return {
+			client,
+			transport,
+			definition,
+			tools: [],
+			resources: [],
+			lastUsedAt: Date.now(),
+			inFlight: 0,
+			status: "needs-auth",
 		}
 	}
 
@@ -237,10 +247,7 @@ export class McpServerManager {
 		return { url, requestInit, authProvider }
 	}
 
-	private async createHttpTransport(
-		definition: ServerDefinition & { url: string },
-		serverName: string,
-	): Promise<Transport> {
+	private createHttpTransport(definition: ServerDefinition & { url: string }, serverName: string): Transport {
 		const { url, requestInit, authProvider } = this.buildHttpConfig(definition, serverName)
 		return new StreamableHTTPClientTransport(url, { requestInit, authProvider })
 	}
