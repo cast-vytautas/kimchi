@@ -150,10 +150,18 @@ export async function handleProbeMcpServer(
  * a throwaway `__probe_*` name so the real server's tokens are never
  * overwritten. When no entry exists (new server) or the URL matches
  * (repeat probe), the real name is used so stored tokens are found.
+ * An entry without a stored `serverUrl` is residue from an incomplete
+ * OAuth flow (only `oauthState`/`codeVerifier` were saved) — the real
+ * name is used so the flow completes and its tokens land on the correct
+ * entry.
  */
 function resolveProbeName(name: string, definition: ServerEntry): string {
 	const existing = getAuthEntry(name)
 	if (!existing) return name
+	// No stored serverUrl means the entry is from an incomplete OAuth flow
+	// (only oauthState/codeVerifier were saved). Use the real name so the
+	// flow can complete and save tokens to the correct entry.
+	if (!existing.serverUrl) return name
 	if (existing.serverUrl === definition.url) return name
 	return `__probe_${randomUUID()}`
 }

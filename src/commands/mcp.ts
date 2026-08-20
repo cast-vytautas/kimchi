@@ -11,9 +11,10 @@
  * name for a *different* URL (e.g. the user edited the URL but kept the
  * name). If so, it probes under a throwaway `__probe_<uuid>` name and
  * cleans it up afterwards so the real server's stored tokens are never
- * overwritten. If no entry exists or the URL matches, the real name is used
- * so a repeat probe of an already-authorized server finds stored OAuth
- * tokens and skips the browser flow.
+ * overwritten. If no entry exists, the URL matches, or the entry is
+ * residue from an incomplete OAuth flow (no serverUrl), the real name is
+ * used — so a repeat probe of an already-authorized server finds stored
+ * OAuth tokens and an interrupted flow completes on the correct entry.
  *
  * Used by Kimchi Desktop's MCP server configuration UI to populate a
  * multiselect dropdown of available tools when the user picks
@@ -198,13 +199,22 @@ async function runProbe(args: string[]): Promise<number> {
  *
  * When no entry exists (new server) or the URL matches (repeat probe of an
  * authorized server), the real name is used so that stored tokens are found
- * and OAuth is skipped on repeat probes.
+ * and OAuth is skipped on repeat probes. An entry without a serverUrl is
+ * residue from an incomplete OAuth flow (only oauthState/codeVerifier were
+ * saved) — the real name is used so the flow can complete and save its
+ * tokens to the correct entry.
  */
 function resolveProbeName(name: string, definition: ServerEntry): string {
 	const existing = getAuthEntry(name)
 	// No stored entry: new server — use the real name so the first probe
 	// persists tokens under it and a repeat probe finds them.
 	if (!existing) return name
+	// No stored serverUrl: the entry is residue from an incomplete OAuth
+	// flow (only oauthState/codeVerifier were saved, no tokens). Use the
+	// real name so the flow can complete and save tokens to the correct
+	// entry — a throwaway name's tokens would be deleted by the finally
+	// cleanup, leaving every subsequent probe with needsAuth: true.
+	if (!existing.serverUrl) return name
 	// URL matches: repeat probe of an authorized server — reuse the name so
 	// stored tokens are found and the browser flow is skipped.
 	if (existing.serverUrl === definition.url) return name
