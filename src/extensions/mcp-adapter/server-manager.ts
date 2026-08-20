@@ -98,7 +98,7 @@ export class McpServerManager {
 	}
 
 	private async createConnection(name: string, definition: ServerDefinition): Promise<ServerConnection> {
-		const client = new Client({ name: `pi-mcp-${name}`, version: "1.0.0" })
+		let client = new Client({ name: `pi-mcp-${name}`, version: "1.0.0" })
 		let transport: Transport | undefined
 
 		try {
@@ -125,9 +125,11 @@ export class McpServerManager {
 				await client.close().catch(() => {})
 				await transport?.close().catch(() => {})
 
+				if (!transport) throw error
+
 				return {
 					client,
-					transport: transport as Transport,
+					transport,
 					definition,
 					tools: [],
 					resources: [],
@@ -139,10 +141,13 @@ export class McpServerManager {
 
 			// SSE fallback for HTTP servers: if StreamableHTTP connect fails with a
 			// non-auth error, retry with the legacy SSE transport.
-			if (definition.url && transport) {
+			if (definition.url && transport && !(error instanceof UnauthorizedError)) {
+				await transport.close().catch(() => {})
+				await client.close().catch(() => {})
+				transport = this.createSseTransport(definition as ServerEntry & { url: string }, name)
+				client = new Client({ name: `pi-mcp-${name}`, version: "1.0.0" })
+
 				try {
-					await transport.close().catch(() => {})
-					transport = this.createSseTransport(definition as ServerEntry & { url: string }, name)
 					await client.connect(transport)
 					this.attachAdapterNotificationHandlers(name, client)
 
@@ -161,10 +166,10 @@ export class McpServerManager {
 				} catch (sseError) {
 					if (sseError instanceof UnauthorizedError && supportsOAuth(definition)) {
 						await client.close().catch(() => {})
-						await transport?.close().catch(() => {})
+						await transport.close().catch(() => {})
 						return {
 							client,
-							transport: transport as Transport,
+							transport,
 							definition,
 							tools: [],
 							resources: [],
@@ -174,7 +179,7 @@ export class McpServerManager {
 						}
 					}
 					await client.close().catch(() => {})
-					await transport?.close().catch(() => {})
+					await transport.close().catch(() => {})
 					throw sseError
 				}
 			}
@@ -388,7 +393,7 @@ export class McpServerManager {
 		// tools/list) — it gets a single 60s budget from start to finish.
 		const deadline = Date.now() + totalBudgetMs
 
-		const client = new Client({ name: `pi-mcp-probe-${name}`, version: "1.0.0" })
+		let client = new Client({ name: `pi-mcp-probe-${name}`, version: "1.0.0" })
 		let transport: Transport | undefined
 
 		try {
@@ -411,9 +416,12 @@ export class McpServerManager {
 			// SSE fallback for HTTP servers: if StreamableHTTP connect fails with a
 			// non-auth error, retry with the legacy SSE transport.
 			if (definition.url && !(error instanceof UnauthorizedError)) {
+				await transport.close().catch(() => {})
+				await client.close().catch(() => {})
+				transport = this.createSseTransport(definition as ServerEntry & { url: string }, name)
+				client = new Client({ name: `pi-mcp-probe-${name}`, version: "1.0.0" })
+
 				try {
-					await transport.close().catch(() => {})
-					transport = this.createSseTransport(definition as ServerEntry & { url: string }, name)
 					const result = await this.connectAndList(client, transport, name, deadline)
 					return result
 				} catch (sseError) {

@@ -337,3 +337,79 @@ describe("withTimeout (indirectly via probeTools)", () => {
 		expect(mockClose).toHaveBeenCalled()
 	})
 })
+
+describe("McpServerManager.probeTools SSE fallback", () => {
+	beforeEach(() => {
+		mockConnect.mockReset()
+		mockListTools.mockReset()
+		mockClose.mockReset()
+		mockSetNotificationHandler.mockReset()
+		vi.mocked(supportsOAuth).mockReset()
+		vi.mocked(supportsOAuth).mockReturnValue(false)
+		mockClose.mockResolvedValue(undefined)
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("falls back to SSE when StreamableHTTP connect fails with non-auth error", async () => {
+		// First connect (StreamableHTTP) fails, second (SSE) succeeds
+		mockConnect.mockRejectedValueOnce(new Error("Invalid content type")).mockResolvedValueOnce(undefined)
+		mockListTools.mockResolvedValue({ tools: [{ name: "sse_tool" }], nextCursor: undefined })
+
+		const manager = new McpServerManager()
+		const result = await manager.probeTools("sse-server", {
+			url: "https://mcp.example.com/sse",
+		})
+
+		expect(result.tools).toHaveLength(1)
+		expect(result.tools[0].name).toBe("sse_tool")
+		expect(result.needsAuth).toBe(false)
+		expect(mockConnect).toHaveBeenCalledTimes(2)
+	})
+
+	it("returns error when both StreamableHTTP and SSE fail", async () => {
+		mockConnect.mockRejectedValue(new Error("Connection refused"))
+
+		const manager = new McpServerManager()
+		const result = await manager.probeTools("dual-fail", {
+			url: "https://mcp.example.com/sse",
+		})
+
+		expect(result.tools).toEqual([])
+		expect(result.needsAuth).toBe(false)
+		expect(result.error).toBe("Connection refused")
+		expect(mockConnect).toHaveBeenCalledTimes(2)
+	})
+
+	it("returns needsAuth when SSE fallback throws UnauthorizedError", async () => {
+		vi.mocked(supportsOAuth).mockReturnValue(true)
+		mockConnect
+			.mockRejectedValueOnce(new Error("Invalid content type"))
+			.mockRejectedValueOnce(new UnauthorizedError("Unauthorized"))
+
+		const manager = new McpServerManager()
+		const result = await manager.probeTools("oauth-sse", {
+			url: "https://mcp.example.com/sse",
+			auth: "oauth",
+		})
+
+		expect(result.needsAuth).toBe(true)
+		expect(result.error).toBeNull()
+		expect(mockConnect).toHaveBeenCalledTimes(2)
+	})
+
+	it("does not fall back to SSE for stdio servers", async () => {
+		mockConnect.mockRejectedValue(new Error("spawn failed"))
+
+		const manager = new McpServerManager()
+		const result = await manager.probeTools("stdio-fail", {
+			command: "nonexistent-binary",
+		})
+
+		expect(result.tools).toEqual([])
+		expect(result.error).toBe("spawn failed")
+		expect(mockConnect).toHaveBeenCalledTimes(1)
+	})
+})
