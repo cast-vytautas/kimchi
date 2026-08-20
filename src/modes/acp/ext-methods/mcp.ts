@@ -5,10 +5,10 @@
 // the dependencies it needs (manager, params) and returns a plain record
 // suitable for the ACP wire.
 
-import { randomUUID } from "node:crypto"
 import { RequestError } from "@agentclientprotocol/sdk"
-import { getAuthEntry, removeAuthEntry } from "../../../extensions/mcp-adapter/mcp-auth.js"
+import { removeAuthEntry } from "../../../extensions/mcp-adapter/mcp-auth.js"
 import { authenticate, getAuthStatus, supportsOAuth } from "../../../extensions/mcp-adapter/mcp-auth-flow.js"
+import { resolveProbeName } from "../../../extensions/mcp-adapter/resolve-probe-name.js"
 import type { McpServerManager } from "../../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult, ServerEntry } from "../../../extensions/mcp-adapter/types.js"
 
@@ -140,28 +140,4 @@ export async function handleProbeMcpServer(
 			removeAuthEntry(probeName)
 		}
 	}
-}
-
-/**
- * Decide which name to use as the OAuth token-store key during a probe.
- *
- * If an auth entry already exists under `name` for a *different* URL —
- * e.g. the user edited the server's URL but kept the name — fall back to
- * a throwaway `__probe_*` name so the real server's tokens are never
- * overwritten. When no entry exists (new server) or the URL matches
- * (repeat probe), the real name is used so stored tokens are found.
- * An entry without a stored `serverUrl` is residue from an incomplete
- * OAuth flow (only `oauthState`/`codeVerifier` were saved) — the real
- * name is used so the flow completes and its tokens land on the correct
- * entry.
- */
-function resolveProbeName(name: string, definition: ServerEntry): string {
-	const existing = getAuthEntry(name)
-	if (!existing) return name
-	// No stored serverUrl means the entry is from an incomplete OAuth flow
-	// (only oauthState/codeVerifier were saved). Use the real name so the
-	// flow can complete and save tokens to the correct entry.
-	if (!existing.serverUrl) return name
-	if (existing.serverUrl === definition.url) return name
-	return `__probe_${randomUUID()}`
 }
