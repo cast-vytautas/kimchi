@@ -106,6 +106,7 @@ export async function handleProbeMcpServer(
 	// stored tokens are never overwritten. See `resolveProbeName` below.
 	const probeName = resolveProbeName(serverName, server)
 	const usedThrowaway = probeName !== serverName
+	const skipAuth = params.skipAuth === true
 
 	try {
 		// For OAuth-capable URL servers, authenticate FIRST before probing.
@@ -114,7 +115,12 @@ export async function handleProbeMcpServer(
 		// overwritten and the callback fails. By authenticating first, the
 		// stored tokens are available when probeTools connects, so it skips
 		// auth entirely.
-		if (supportsOAuth(server) && server.url) {
+		//
+		// When skipAuth is true, skip the explicit authenticate() call and
+		// let probeTools() handle it: stored access tokens or refresh tokens
+		// are tried by the SDK internally; if both fail, probeTools() returns
+		// { needsAuth: true } without opening a browser.
+		if (!skipAuth && supportsOAuth(server) && server.url) {
 			const authStatus = await getAuthStatus(probeName, server.url)
 			if (authStatus !== "authenticated") {
 				try {
