@@ -406,14 +406,8 @@ export class McpServerManager {
 		try {
 			transport = await this.createTransport(name, definition)
 		} catch (error) {
-			if (error instanceof UnauthorizedError) {
-				return { tools: [], needsAuth: true, error: null }
-			}
-			return {
-				tools: [],
-				needsAuth: false,
-				error: error instanceof Error ? error.message : String(error),
-			}
+			if (error instanceof UnauthorizedError) return this.authProbeResult()
+			return this.errorProbeResult(error)
 		}
 
 		try {
@@ -432,25 +426,13 @@ export class McpServerManager {
 					const result = await this.connectAndList(client, transport, name, deadline)
 					return result
 				} catch (sseError) {
-					if (sseError instanceof UnauthorizedError) {
-						return { tools: [], needsAuth: true, error: null }
-					}
-					return {
-						tools: [],
-						needsAuth: false,
-						error: sseError instanceof Error ? sseError.message : String(sseError),
-					}
+					if (sseError instanceof UnauthorizedError) return this.authProbeResult()
+					return this.errorProbeResult(sseError)
 				}
 			}
 
-			if (error instanceof UnauthorizedError) {
-				return { tools: [], needsAuth: true, error: null }
-			}
-			return {
-				tools: [],
-				needsAuth: false,
-				error: error instanceof Error ? error.message : String(error),
-			}
+			if (error instanceof UnauthorizedError) return this.authProbeResult()
+			return this.errorProbeResult(error)
 		} finally {
 			await client.close().catch(() => {})
 			await transport?.close().catch(() => {})
@@ -480,6 +462,24 @@ export class McpServerManager {
 		}))
 
 		return { tools: probeTools, needsAuth: false, error: null }
+	}
+
+	/**
+	 * Build a ProbeResult indicating the server requires authentication.
+	 */
+	private authProbeResult(): ProbeResult {
+		return { tools: [], needsAuth: true, error: null }
+	}
+
+	/**
+	 * Build a ProbeResult from an error, extracting a human-readable message.
+	 */
+	private errorProbeResult(error: unknown): ProbeResult {
+		return {
+			tools: [],
+			needsAuth: false,
+			error: error instanceof Error ? error.message : String(error),
+		}
 	}
 }
 
