@@ -481,7 +481,7 @@ export class McpServerManager {
 				annotations: t.annotations,
 			}))
 			const entry: ServerCacheEntry = {
-				configHash: computeServerHash(definition as ServerEntry),
+				configHash: computeServerHash(definition),
 				tools: cachedTools,
 				resources: [],
 				cachedAt: Date.now(),

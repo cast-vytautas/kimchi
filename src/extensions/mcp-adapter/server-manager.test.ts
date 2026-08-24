@@ -500,4 +500,19 @@ describe("McpServerManager.probeTools cache writing", () => {
 
 		expect(mockSaveMetadataCache).not.toHaveBeenCalled()
 	})
+
+	it("saveMetadataCache merges with existing entries (does not overwrite)", async () => {
+		mockConnect.mockResolvedValue(undefined)
+		mockListTools.mockResolvedValue({ tools: [{ name: "tool_a" }], nextCursor: undefined })
+
+		const manager = new McpServerManager()
+		await manager.probeTools("new-server", { command: "echo" })
+
+		// saveMetadataCache already does a read-merge-write internally — verify
+		// it was called with only the new server, not a full cache overwrite.
+		expect(mockSaveMetadataCache).toHaveBeenCalledTimes(1)
+		const cacheArg = mockSaveMetadataCache.mock.calls[0][0]
+		expect(Object.keys(cacheArg.servers)).toEqual(["new-server"])
+		expect(cacheArg.servers["new-server"]).toBeDefined()
+	})
 })
