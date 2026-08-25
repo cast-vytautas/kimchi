@@ -31,7 +31,7 @@ import { FERMENT_EVENTS, type FermentPhaseStartedPayload } from "../../extension
 import { getActive } from "../../extensions/ferment/state.js"
 import { PERMISSION_EVENTS } from "../../extensions/permissions/permissions-events.js"
 import { getTodoScopeKey } from "../../extensions/todos/scope.js"
-import { getTodoState, getTodosForScope, GLOBAL_TODO_SCOPE, subscribeTodoStore } from "../../extensions/todos/store.js"
+import { GLOBAL_TODO_SCOPE, getTodoState, getTodosForScope, subscribeTodoStore } from "../../extensions/todos/store.js"
 import type { TodoItem, TodoStatus, TodosSliceState } from "../../extensions/todos/types.js"
 import type { Ferment } from "../../ferment/types.js"
 
@@ -241,7 +241,9 @@ export class AcpPlanTracker {
 		// all-pending emission as the first plan the client sees.
 		if (this.options.events) {
 			this.unsubscribeEvents = this.options.events.on(FERMENT_EVENTS.PHASE_STARTED, (raw) => this.onPhaseStarted(raw))
-			this.unsubscribePlanApproved = this.options.events.on(PERMISSION_EVENTS.PLAN_APPROVED, () => this.onPlanApproved())
+			this.unsubscribePlanApproved = this.options.events.on(PERMISSION_EVENTS.PLAN_APPROVED, () =>
+				this.onPlanApproved(),
+			)
 		}
 		this.unsubscribeTodos = subscribeTodoStore((_details, emitterSessionId) =>
 			this.onTodoStoreChanged(emitterSessionId),

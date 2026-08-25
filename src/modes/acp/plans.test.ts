@@ -418,11 +418,7 @@ describe("AcpPlanTracker", () => {
 			// own PHASE_STARTED re-emits the initial plan. The seeded `[Step 1]`
 			// anchor merges into its `↳` summary row instead of duplicating it.
 			const entries = planEntries(emitted, emitted.length - 1)
-			expect(entries.map((e) => e.content)).toEqual([
-				"[Phase 1] Implementation",
-				"↳ Write the code",
-				"↳ Run the tests",
-			])
+			expect(entries.map((e) => e.content)).toEqual(["[Phase 1] Implementation", "↳ Write the code", "↳ Run the tests"])
 		} finally {
 			tracker.stop()
 		}
@@ -460,11 +456,7 @@ describe("AcpPlanTracker", () => {
 			const entries = planEntries(emitted, emitted.length - 1)
 			// Anchor status propagates onto the summary row; the anchor row
 			// itself is suppressed so the step appears exactly once.
-			expect(entries.map((e) => e.content)).toEqual([
-				"[Phase 1] Implementation",
-				"↳ Write the code",
-				"↳ Run the tests",
-			])
+			expect(entries.map((e) => e.content)).toEqual(["[Phase 1] Implementation", "↳ Write the code", "↳ Run the tests"])
 			expect(entries[1].status).toBe("in_progress")
 		} finally {
 			tracker.stop()
@@ -544,19 +536,25 @@ describe("AcpPlanTracker", () => {
 		try {
 			simulatePlanApproval(bus)
 			applyWriteTodos(
-				{ scope: { kind: "global" }, todos: [
-					{ content: "write tests", status: "in_progress" },
-					{ content: "run linter", status: "pending" },
-				] },
+				{
+					scope: { kind: "global" },
+					todos: [
+						{ content: "write tests", status: "in_progress" },
+						{ content: "run linter", status: "pending" },
+					],
+				},
 				TEST_SESSION_ID,
 			)
 			expect(emitted).toHaveLength(1)
 
 			applyWriteTodos(
-				{ scope: { kind: "global" }, todos: [
-					{ content: "write tests", status: "completed" },
-					{ content: "run linter", status: "in_progress" },
-				] },
+				{
+					scope: { kind: "global" },
+					todos: [
+						{ content: "write tests", status: "completed" },
+						{ content: "run linter", status: "in_progress" },
+					],
+				},
 				TEST_SESSION_ID,
 			)
 			expect(emitted).toHaveLength(2)
@@ -573,16 +571,10 @@ describe("AcpPlanTracker", () => {
 		tracker.start()
 		try {
 			simulatePlanApproval(bus)
-			applyWriteTodos(
-				{ scope: { kind: "global" }, todos: [{ content: "task", status: "pending" }] },
-				TEST_SESSION_ID,
-			)
+			applyWriteTodos({ scope: { kind: "global" }, todos: [{ content: "task", status: "pending" }] }, TEST_SESSION_ID)
 			expect(emitted).toHaveLength(1)
 
-			applyWriteTodos(
-				{ scope: { kind: "global" }, todos: [] },
-				TEST_SESSION_ID,
-			)
+			applyWriteTodos({ scope: { kind: "global" }, todos: [] }, TEST_SESSION_ID)
 			expect(emitted).toHaveLength(2)
 			expect(planEntries(emitted, 1)).toHaveLength(0)
 		} finally {
@@ -596,9 +588,10 @@ describe("AcpPlanTracker", () => {
 		try {
 			simulatePlanApproval(bus)
 			applyWriteTodos(
-				{ scope: { kind: "global" }, todos: [
-					{ content: "write tests", status: "in_progress", activeForm: "writing tests" },
-				] },
+				{
+					scope: { kind: "global" },
+					todos: [{ content: "write tests", status: "in_progress", activeForm: "writing tests" }],
+				},
 				TEST_SESSION_ID,
 			)
 			const entries = planEntries(emitted, 0)

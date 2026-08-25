@@ -95,6 +95,7 @@ import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
+import { AcpPlanTracker, type ActivePlan } from "./plans.js"
 import {
 	type AcpSkillInfo,
 	buildSkillAvailableCommands,
@@ -103,7 +104,6 @@ import {
 	discoverAcpSkillCommands,
 	tryParseSkillCommand,
 } from "./skill-commands.js"
-import { AcpPlanTracker, type ActivePlan } from "./plans.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import { asString, truncate } from "./utils.js"
