@@ -29,7 +29,7 @@ import type { PlanEntry, PlanEntryStatus, SessionNotification } from "@agentclie
 import type { EventBus } from "@earendil-works/pi-coding-agent"
 import { FERMENT_EVENTS, type FermentPhaseStartedPayload } from "../../extensions/ferment/domain-events.js"
 import { getActive } from "../../extensions/ferment/state.js"
-import { PERMISSION_EVENTS, type PermissionPlanApprovedPayload } from "../../extensions/permissions/permissions-events.js"
+import { PERMISSION_EVENTS } from "../../extensions/permissions/permissions-events.js"
 import { getTodoScopeKey } from "../../extensions/todos/scope.js"
 import { getTodoState, getTodosForScope, GLOBAL_TODO_SCOPE, subscribeTodoStore } from "../../extensions/todos/store.js"
 import type { TodoItem, TodoStatus, TodosSliceState } from "../../extensions/todos/types.js"
@@ -116,10 +116,29 @@ export function globalTodosToPlanEntries(state: TodosSliceState): PlanEntry[] {
  *  decision (PR #1034 review, finding 2): merging placeholders for future
  *  phases from the previously emitted plan is possible if clients want
  *  forward-looking visibility. */
+/** Reserved `_syncKey` the todo-sync bridge stamps on the step anchor it
+ *  seeds at STEP_STARTED (see handleStepStarted). */
+const STEP_ANCHOR_SYNC_KEY = "anchor"
+
+/** Mirror of the todos reducer's text normalization so seeded content can be
+ *  compared against its stored form: the store trims and collapses
+ *  whitespace, while the bridge's seeded strings can contain newlines or
+ *  runs of spaces (real step descriptions are multi-line, with newline-
+ *  delimited "Scope:", "Files Changed:" sections). Exact string equality
+ *  misses them; naive matching was the bug observed as duplicate Chunk
+ *  rows in the zed plan panel. */
+function normalizeTodoText(text: string): string {
+	return text.trim().replace(/\s+/g, " ")
+}
+
 /** True for the bridge-seeded step anchor: the exact `[Step M] description`
- *  todo the todo-sync bridge writes into the step scope at STEP_STARTED. */
+ *  todo the todo-sync bridge writes into the step scope at STEP_STARTED.
+ *  Matched by the reserved `_syncKey` first (robust against the store's
+ *  whitespace normalization), with a normalized-content fallback for
+ *  anchors persisted before the key existed. */
 function isSeededStepAnchor(todo: TodoItem, step: { index: number; description: string }): boolean {
-	return todo.content === `[Step ${step.index}] ${step.description}`
+	if (todo._syncKey === STEP_ANCHOR_SYNC_KEY) return true
+	return todo.content === normalizeTodoText(`[Step ${step.index}] ${step.description}`)
 }
 
 /** The todo-sync bridge seeds each phase scope with a `↳ <step>` summary row
@@ -138,9 +157,11 @@ function mergeStepAnchorIntoSummary(
 	anchorByStepId: ReadonlyMap<string, TodoItem>,
 ): TodoItem {
 	// Correlate the summary row to its step: `_syncKey` when bridge-seeded,
-	// falling back to the exact `↳ description` content for model-written
+	// falling back to normalized `↳ description` content for model-written
 	// lists that dropped the key.
-	const step = steps.find((s) => summary._syncKey === s.id) ?? steps.find((s) => summary.content === `↳ ${s.description}`)
+	const step =
+		steps.find((s) => summary._syncKey === s.id) ??
+		steps.find((s) => summary.content === normalizeTodoText(`↳ ${s.description}`))
 	if (!step) return summary
 	const anchor = anchorByStepId.get(step.id)
 	if (!anchor) return summary
@@ -220,9 +241,7 @@ export class AcpPlanTracker {
 		// all-pending emission as the first plan the client sees.
 		if (this.options.events) {
 			this.unsubscribeEvents = this.options.events.on(FERMENT_EVENTS.PHASE_STARTED, (raw) => this.onPhaseStarted(raw))
-			this.unsubscribePlanApproved = this.options.events.on(PERMISSION_EVENTS.PLAN_APPROVED, (raw) =>
-				this.onPlanApproved(raw),
-			)
+			this.unsubscribePlanApproved = this.options.events.on(PERMISSION_EVENTS.PLAN_APPROVED, () => this.onPlanApproved())
 		}
 		this.unsubscribeTodos = subscribeTodoStore((_details, emitterSessionId) =>
 			this.onTodoStoreChanged(emitterSessionId),
@@ -288,10 +307,9 @@ export class AcpPlanTracker {
 		this.emit(plan.entries)
 	}
 
-	private onPlanApproved(raw: unknown): void {
-		// Payload is informational (plan path for logging); the approval itself
-		// is the signal. No payload validation needed beyond consumption.
-		const _payload = raw as PermissionPlanApprovedPayload
+	private onPlanApproved(): void {
+		// The payload (plan path) is informational; the approval event itself
+		// is the signal, so there is nothing to validate here.
 		this.planExecutionApproved = true
 	}
 

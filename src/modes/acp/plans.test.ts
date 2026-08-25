@@ -444,11 +444,15 @@ describe("AcpPlanTracker", () => {
 				{ content: "↳ Write the code", status: "pending", _syncKey: "step-1" },
 				{ content: "↳ Run the tests", status: "pending" },
 			])
-			// STEP_STARTED seeds the step scope with the in_progress anchor.
+			// STEP_STARTED seeds the step scope with the in_progress anchor,
+			// tagged with the reserved `_syncKey`. Content is deliberately NOT
+			// the `[Step N] <desc>` seed format so the key (not content equality)
+			// must drive the merge — mirrors how the bridge tag survives the
+			// store's whitespace normalization.
 			applyWriteTodos(
 				{
 					scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
-					todos: [{ content: "[Step 1] Write the code", status: "in_progress", activeForm: "Writing the code" }],
+					todos: [{ content: "Implementing the sessions formatter", status: "in_progress", _syncKey: "anchor" }],
 				},
 				TEST_SESSION_ID,
 			)
