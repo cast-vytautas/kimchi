@@ -6,6 +6,7 @@ import { createEventBus, type EventBus } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { FERMENT_EVENTS, type FermentPhaseStartedPayload } from "../../extensions/ferment/domain-events.js"
 import { getActive, setActive } from "../../extensions/ferment/state.js"
+import { PERMISSION_EVENTS } from "../../extensions/permissions/permissions-events.js"
 import { __resetTodoStore, applyWriteTodos } from "../../extensions/todos/store.js"
 import type { TodoDraft } from "../../extensions/todos/types.js"
 import type { Ferment } from "../../ferment/types.js"
@@ -96,6 +97,13 @@ function writePhaseTodos(phaseId: string, todos: TodoDraft[], sessionId = TEST_S
  *  with the session that owns it. Content is irrelevant; length > 0 matters. */
 function simulateBridgePhaseWrite(phaseId: string, sessionId = TEST_SESSION_ID): void {
 	writePhaseTodos(phaseId, [{ content: `[bridge] ${phaseId}`, status: "in_progress" }], sessionId)
+}
+
+/** Simulate the user approving a plan-mode plan (the "Execute the plan"
+ *  path): the permissions extension emits PLAN_APPROVED on the bus, and the
+ *  tracker un-gates its global-scope emission. */
+function simulatePlanApproval(bus: EventBus): void {
+	bus.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath: undefined })
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -322,8 +330,7 @@ describe("AcpPlanTracker", () => {
 		}
 	})
 
-	it("resume snapshot emits nothing without an active ferment", () => {
-		writePhaseTodos("phase-1", [{ content: "stale todo", status: "pending" }])
+	it("resume snapshot emits nothing when no todos exist at all", () => {
 		const { emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
@@ -334,17 +341,24 @@ describe("AcpPlanTracker", () => {
 		}
 	})
 
-	it("resume snapshot emits nothing when only global-scope todos exist", () => {
-		setActive(makeFerment())
+	it("resume snapshot skips global-scope todos without approval in this tracker lifetime", () => {
+		// A fresh tracker after `loadSession` must not replay the pre-restart
+		// scratchpad: PLAN_APPROVED fired before this tracker existed.
 		applyWriteTodos(
-			{ scope: { kind: "global" }, todos: [{ content: "user todo", status: "pending" }] },
+			{ scope: { kind: "global" }, todos: [{ content: "restored task", status: "in_progress" }] },
 			TEST_SESSION_ID,
 		)
-		const { emitted, tracker } = makeHarness()
+		const { bus, emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
 			tracker.emitRestoredSnapshot()
 			expect(emitted).toHaveLength(0)
+
+			// Once approval fires (same tracker lifetime), a snapshot emits.
+			simulatePlanApproval(bus)
+			tracker.emitRestoredSnapshot()
+			expect(emitted).toHaveLength(1)
+			expect(planEntries(emitted, 0)[0].content).toBe("restored task")
 		} finally {
 			tracker.stop()
 		}
@@ -401,27 +415,217 @@ describe("AcpPlanTracker", () => {
 
 			// The rebuild flattens only ferment-scoped todos currently in the
 			// store: phase 2 never populated its scope, so it drops out until its
-			// own PHASE_STARTED re-emits the initial plan.
+			// own PHASE_STARTED re-emits the initial plan. The seeded `[Step 1]`
+			// anchor merges into its `↳` summary row instead of duplicating it.
 			const entries = planEntries(emitted, emitted.length - 1)
 			expect(entries.map((e) => e.content)).toEqual([
 				"[Phase 1] Implementation",
 				"↳ Write the code",
 				"↳ Run the tests",
-				"[Step 1] Write the code",
 			])
 		} finally {
 			tracker.stop()
 		}
 	})
 
-	it("emits nothing on the execute path (no ferment, scoped todos change)", () => {
-		const { emitted, tracker } = makeHarness()
+	it("merges the seeded step anchor into the phase summary row instead of duplicating it", () => {
+		const ferment = makeFerment()
+		setActive(ferment)
+		const { bus, emitted, tracker } = makeHarness()
 		tracker.start()
 		try {
-			// No PHASE_STARTED: executePlan() creates no ferment. Even scoped
-			// todo writes must not produce a plan (acceptance criterion).
-			writePhaseTodos("phase-1", [{ content: "x", status: "pending" }])
+			simulateBridgePhaseWrite("phase-1")
+			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
+
+			// Summary row lags at the seeded status — the bridge only flips it at
+			// STEP_COMPLETED, so while the step runs it still says "pending".
+			writePhaseTodos("phase-1", [
+				{ content: "[Phase 1] Implementation", status: "in_progress" },
+				{ content: "↳ Write the code", status: "pending", _syncKey: "step-1" },
+				{ content: "↳ Run the tests", status: "pending" },
+			])
+			// STEP_STARTED seeds the step scope with the in_progress anchor.
+			applyWriteTodos(
+				{
+					scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+					todos: [{ content: "[Step 1] Write the code", status: "in_progress", activeForm: "Writing the code" }],
+				},
+				TEST_SESSION_ID,
+			)
+
+			const entries = planEntries(emitted, emitted.length - 1)
+			// Anchor status propagates onto the summary row; the anchor row
+			// itself is suppressed so the step appears exactly once.
+			expect(entries.map((e) => e.content)).toEqual([
+				"[Phase 1] Implementation",
+				"↳ Write the code",
+				"↳ Run the tests",
+			])
+			expect(entries[1].status).toBe("in_progress")
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("keeps model-written step sub-tasks while suppressing only the seeded anchor", () => {
+		const ferment = makeFerment()
+		setActive(ferment)
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			simulateBridgePhaseWrite("phase-1")
+			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
+
+			writePhaseTodos("phase-1", [
+				{ content: "[Phase 1] Implementation", status: "in_progress" },
+				{ content: "↳ Write the code", status: "pending" },
+				{ content: "↳ Run the tests", status: "pending" },
+			])
+			// Model extends the step scope: anchor plus its own sub-task.
+			applyWriteTodos(
+				{
+					scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+					todos: [
+						{ content: "[Step 1] Write the code", status: "in_progress" },
+						{ content: "refactor registry wiring", status: "pending" },
+					],
+				},
+				TEST_SESSION_ID,
+			)
+
+			const entries = planEntries(emitted, emitted.length - 1)
+			expect(entries.map((e) => e.content)).toEqual([
+				"[Phase 1] Implementation",
+				"↳ Write the code",
+				"↳ Run the tests",
+				"refactor registry wiring",
+			])
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("emits global-scope todos only after plan approval (no ferment)", () => {
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			// Planning-phase scratchpad todos: the agent researching the plan.
+			// These must NOT enter the client's plan panel.
+			applyWriteTodos(
+				{ scope: { kind: "global" }, todos: [{ content: "research the codebase", status: "in_progress" }] },
+				TEST_SESSION_ID,
+			)
 			expect(emitted).toHaveLength(0)
+
+			// User approves the plan → execution begins. The next todo write
+			// (the model replacing its scratchpad with execution steps) emits.
+			simulatePlanApproval(bus)
+			applyWriteTodos(
+				{ scope: { kind: "global" }, todos: [{ content: "write tests", status: "pending" }] },
+				TEST_SESSION_ID,
+			)
+			expect(emitted).toHaveLength(1)
+			const entries = planEntries(emitted, 0)
+			expect(entries).toHaveLength(1)
+			expect(entries[0].content).toBe("write tests")
+			expect(entries[0].status).toBe("pending")
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("updates plan-mode statuses on global todo changes", () => {
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			simulatePlanApproval(bus)
+			applyWriteTodos(
+				{ scope: { kind: "global" }, todos: [
+					{ content: "write tests", status: "in_progress" },
+					{ content: "run linter", status: "pending" },
+				] },
+				TEST_SESSION_ID,
+			)
+			expect(emitted).toHaveLength(1)
+
+			applyWriteTodos(
+				{ scope: { kind: "global" }, todos: [
+					{ content: "write tests", status: "completed" },
+					{ content: "run linter", status: "in_progress" },
+				] },
+				TEST_SESSION_ID,
+			)
+			expect(emitted).toHaveLength(2)
+			const entries = planEntries(emitted, 1)
+			expect(entries[0].status).toBe("completed")
+			expect(entries[1].status).toBe("in_progress")
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("emits empty entries when all global todos are cleared", () => {
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			simulatePlanApproval(bus)
+			applyWriteTodos(
+				{ scope: { kind: "global" }, todos: [{ content: "task", status: "pending" }] },
+				TEST_SESSION_ID,
+			)
+			expect(emitted).toHaveLength(1)
+
+			applyWriteTodos(
+				{ scope: { kind: "global" }, todos: [] },
+				TEST_SESSION_ID,
+			)
+			expect(emitted).toHaveLength(2)
+			expect(planEntries(emitted, 1)).toHaveLength(0)
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("uses activeForm for plan-mode in_progress entries", () => {
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			simulatePlanApproval(bus)
+			applyWriteTodos(
+				{ scope: { kind: "global" }, todos: [
+					{ content: "write tests", status: "in_progress", activeForm: "writing tests" },
+				] },
+				TEST_SESSION_ID,
+			)
+			const entries = planEntries(emitted, 0)
+			expect(entries[0].content).toBe("writing tests")
+		} finally {
+			tracker.stop()
+		}
+	})
+
+	it("ferment PHASE_STARTED takes over from plan-mode emission", () => {
+		const { bus, emitted, tracker } = makeHarness()
+		tracker.start()
+		try {
+			// Plan-mode writes first.
+			simulatePlanApproval(bus)
+			applyWriteTodos(
+				{ scope: { kind: "global" }, todos: [{ content: "ad-hoc task", status: "pending" }] },
+				TEST_SESSION_ID,
+			)
+			expect(emitted).toHaveLength(1)
+			expect(planEntries(emitted, 0)[0].content).toBe("ad-hoc task")
+
+			// Ferment starts — takes over emission.
+			const ferment = makeFerment()
+			setActive(ferment)
+			simulateBridgePhaseWrite("phase-1")
+			bus.emit(FERMENT_EVENTS.PHASE_STARTED, phaseStartedPayload(ferment, "phase-1"))
+			expect(emitted).toHaveLength(2)
+			const fermentEntries = planEntries(emitted, 1)
+			expect(fermentEntries.some((e) => e.content === "ad-hoc task")).toBe(false)
+			expect(fermentEntries[0].content).toBe("[Phase 1] Implementation")
 		} finally {
 			tracker.stop()
 		}

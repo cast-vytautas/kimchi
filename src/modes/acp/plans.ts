@@ -1,31 +1,43 @@
-// ACP plan tracking: translates the ferment lifecycle into ACP `plan`
-// sessionUpdates for clients that render structured plan progress (e.g. AO's
-// chat UI).
+// ACP plan tracking: translates the ferment lifecycle and todo store into
+// ACP `plan` sessionUpdates for clients that render structured plan progress
+// (e.g. Zed's agent panel, AO's chat UI).
 //
-// Signal path:
-//   1. FERMENT_EVENTS.PHASE_STARTED (pi.events bus, same bus the todo-sync
-//      bridge uses) → build the initial plan from the active ferment via
-//      getActive(), every entry `pending`, and emit.
-//   2. subscribeTodoStore() → on each ferment-scoped store change, translate
-//      TodoItem[] back into PlanEntry[] and emit.
+// Two emission paths:
 //
-// The execute path (plan-approved-without-ferment) creates no ferment and
-// emits no lifecycle events, so nothing is sent — the ticket's explicit
-// choice: a plan whose statuses never update would be misleading.
+//   1. Ferment path (structured): FERMENT_EVENTS.PHASE_STARTED → build the
+//      initial plan from the active ferment via getActive(), every entry
+//      `pending`. Subsequent todo store changes translate ferment-scoped
+//      TodoItem[] → PlanEntry[] (phases + steps, ordered).
+//
+//   2. Plan-mode path (flat): after the user approves a plan-mode plan
+//      (PERMISSION_EVENTS.PLAN_APPROVED), emit from the session's
+//      global-scope todos. Pre-approval todos are the agent's planning
+//      scratchpad, and ad-hoc todos from unrelated work are noise — both
+//      stay out of the client's plan panel.
+//
+// When a ferment starts, the ferment path takes over and the global-scope
+// todos are excluded. When the ferment completes, the tracker clears the
+// plan (empty entries array).
 //
 // ACP v1 note: the wire format is a single unnamed plan
 // (`sessionUpdate: "plan"` with `Plan = { entries }`). The tracker's
-// activePlan still carries a `planId` (= ferment.id) so a future v2
-// (`plan_update` / `PlanItems`) migration has the identifier ready.
+// activePlan carries a `planId` (= ferment.id for ferments, `"main"` for
+// plan-mode) so a future v2 (`plan_update` / `PlanItems`) migration has
+// the identifier ready.
 
 import type { PlanEntry, PlanEntryStatus, SessionNotification } from "@agentclientprotocol/sdk"
 import type { EventBus } from "@earendil-works/pi-coding-agent"
 import { FERMENT_EVENTS, type FermentPhaseStartedPayload } from "../../extensions/ferment/domain-events.js"
 import { getActive } from "../../extensions/ferment/state.js"
+import { PERMISSION_EVENTS, type PermissionPlanApprovedPayload } from "../../extensions/permissions/permissions-events.js"
 import { getTodoScopeKey } from "../../extensions/todos/scope.js"
-import { getTodoState, getTodosForScope, subscribeTodoStore } from "../../extensions/todos/store.js"
+import { getTodoState, getTodosForScope, GLOBAL_TODO_SCOPE, subscribeTodoStore } from "../../extensions/todos/store.js"
 import type { TodoItem, TodoStatus, TodosSliceState } from "../../extensions/todos/types.js"
 import type { Ferment } from "../../ferment/types.js"
+
+/** planId for non-ferment plans. Matches the ACP v2 migration recommendation
+ *  for adapting v1 single-plan updates to v2 (`id: "main"`). */
+const PLAN_MODE_PLAN_ID = "main"
 
 export interface ActivePlan {
 	/** V2-ready identifier. For ferments this is `ferment.id`. */
@@ -83,6 +95,14 @@ export function createInitialPlanEntries(ferment: Ferment): PlanEntry[] {
 	return entries
 }
 
+/** Flatten global-scope todos into plan entries for non-ferment sessions.
+ *  Used when no ferment is active — covers regular plan mode and ad-hoc
+ *  todo usage. */
+export function globalTodosToPlanEntries(state: TodosSliceState): PlanEntry[] {
+	const globalKey = getTodoScopeKey(GLOBAL_TODO_SCOPE)
+	return (state.byScope[globalKey]?.todos ?? []).map(todoToPlanEntry)
+}
+
 /** Flatten ferment-scoped todos into plan entries, ordered by phase then
  *  step following the ferment's own ordering. Global-scope todos belong to
  *  the user, not the ferment, and are excluded — as are scopes of any other
@@ -96,16 +116,65 @@ export function createInitialPlanEntries(ferment: Ferment): PlanEntry[] {
  *  decision (PR #1034 review, finding 2): merging placeholders for future
  *  phases from the previously emitted plan is possible if clients want
  *  forward-looking visibility. */
+/** True for the bridge-seeded step anchor: the exact `[Step M] description`
+ *  todo the todo-sync bridge writes into the step scope at STEP_STARTED. */
+function isSeededStepAnchor(todo: TodoItem, step: { index: number; description: string }): boolean {
+	return todo.content === `[Step ${step.index}] ${step.description}`
+}
+
+/** The todo-sync bridge seeds each phase scope with a `↳ <step>` summary row
+ *  AND, when the step starts, a separate `[Step M]` anchor in the step scope.
+ *  Emitted verbatim, the step shows up twice in the plan: the phase row lags
+ *  at its seeded status (the bridge only flips it at STEP_COMPLETED) while
+ *  the live anchor displays via activeForm — observed as a duplicated
+ *  "Chunk 1" row pair in the zed plan panel.
+ *
+ *  Merge instead: the anchor's live in_progress status propagates onto the
+ *  phase summary row and the anchor entry itself is suppressed. Model-written
+ *  sub-tasks in the step scope still emit; only the seeded anchor is dropped. */
+function mergeStepAnchorIntoSummary(
+	summary: TodoItem,
+	steps: { id: string; index: number; description: string }[],
+	anchorByStepId: ReadonlyMap<string, TodoItem>,
+): TodoItem {
+	// Correlate the summary row to its step: `_syncKey` when bridge-seeded,
+	// falling back to the exact `↳ description` content for model-written
+	// lists that dropped the key.
+	const step = steps.find((s) => summary._syncKey === s.id) ?? steps.find((s) => summary.content === `↳ ${s.description}`)
+	if (!step) return summary
+	const anchor = anchorByStepId.get(step.id)
+	if (!anchor) return summary
+	// Upgrade only: pending → in_progress. Other states reconcile through the
+	// bridge's own lifecycle writes (STEP_COMPLETED sets the summary row), so
+	// racing them here would fight the bridge.
+	if (summary.status === "pending" && anchor.status === "in_progress") {
+		return { ...summary, status: "in_progress" }
+	}
+	return summary
+}
+
 export function todoStoreToPlanEntries(state: TodosSliceState, ferment: Ferment): PlanEntry[] {
 	const entries: PlanEntry[] = []
 	for (const phase of ferment.phases) {
 		const phaseKey = getTodoScopeKey({ kind: "ferment", phaseId: phase.id })
-		for (const todo of state.byScope[phaseKey]?.todos ?? []) {
-			entries.push(todoToPlanEntry(todo))
+		const phaseTodos = state.byScope[phaseKey]?.todos ?? []
+
+		// Locate the seeded anchor per step (reference identity so the suppress
+		// pass below can match by object, surviving duplicate-content models).
+		const anchorByStepId = new Map<string, TodoItem>()
+		for (const step of phase.steps) {
+			const stepKey = getTodoScopeKey({ kind: "ferment-step", phaseId: phase.id, stepId: step.id })
+			const anchor = state.byScope[stepKey]?.todos.find((t) => isSeededStepAnchor(t, step))
+			if (anchor) anchorByStepId.set(step.id, anchor)
+		}
+
+		for (const todo of phaseTodos) {
+			entries.push(todoToPlanEntry(mergeStepAnchorIntoSummary(todo, phase.steps, anchorByStepId)))
 		}
 		for (const step of phase.steps) {
 			const stepKey = getTodoScopeKey({ kind: "ferment-step", phaseId: phase.id, stepId: step.id })
 			for (const todo of state.byScope[stepKey]?.todos ?? []) {
+				if (anchorByStepId.get(step.id) === todo) continue
 				entries.push(todoToPlanEntry(todo))
 			}
 		}
@@ -123,8 +192,15 @@ export class AcpPlanTracker {
 	private activePlan: ActivePlan | undefined
 	private unsubscribeEvents: (() => void) | undefined
 	private unsubscribeTodos: (() => void) | undefined
+	private unsubscribePlanApproved: (() => void) | undefined
 	private lastEmittedKey = ""
 	private started = false
+	/** Gates the plan-mode path: stays false until the user approves a plan
+	 *  (PERMISSION_EVENTS.PLAN_APPROVED). Planning-phase and ad-hoc todos
+	 *  would otherwise pollute the client's plan panel. Persisted for the
+	 *  tracker's lifetime, so resumed sessions that load a fresh tracker
+	 *  skip the plan-mode snapshot until approval fires again. */
+	private planExecutionApproved = false
 	private readonly getActiveFerment: () => Ferment | undefined
 
 	constructor(private readonly options: AcpPlanTrackerOptions) {
@@ -144,6 +220,9 @@ export class AcpPlanTracker {
 		// all-pending emission as the first plan the client sees.
 		if (this.options.events) {
 			this.unsubscribeEvents = this.options.events.on(FERMENT_EVENTS.PHASE_STARTED, (raw) => this.onPhaseStarted(raw))
+			this.unsubscribePlanApproved = this.options.events.on(PERMISSION_EVENTS.PLAN_APPROVED, (raw) =>
+				this.onPlanApproved(raw),
+			)
 		}
 		this.unsubscribeTodos = subscribeTodoStore((_details, emitterSessionId) =>
 			this.onTodoStoreChanged(emitterSessionId),
@@ -155,6 +234,8 @@ export class AcpPlanTracker {
 		this.started = false
 		this.unsubscribeEvents?.()
 		this.unsubscribeEvents = undefined
+		this.unsubscribePlanApproved?.()
+		this.unsubscribePlanApproved = undefined
 		this.unsubscribeTodos?.()
 		this.unsubscribeTodos = undefined
 		// Reset the dedupe cache so a tracker accidentally restarted emits the
@@ -176,23 +257,42 @@ export class AcpPlanTracker {
 	}
 
 	/**
-	 * Emit one plan snapshot from restored ferment-scoped todos. Called after
-	 * a session resume (ACP `loadSession`): the todo store has been restored
-	 * from the persisted session branch, but no PHASE_STARTED will fire again
-	 * for the already-active phase, so without this the client sees no plan
-	 * until the next todo store change.
+	 * Emit one plan snapshot from restored todos. Called after a session
+	 * resume (ACP `loadSession`): the todo store has been restored from the
+	 * persisted session branch, but no PHASE_STARTED will fire again for the
+	 * already-active phase, so without this the client sees no plan until
+	 * the next todo store change.
 	 *
-	 * Gated on an ACTIVE FERMENT — not just any todos — so global-scope todos
-	 * or a session without a ferment produce no plan.
+	 * If a ferment is active, the snapshot comes from ferment-scoped todos.
+	 * Otherwise, falls back to global-scope todos (plan-mode resume).
 	 */
 	emitRestoredSnapshot(): void {
 		const ferment = this.getActiveFerment()
-		if (!ferment) return
-		const entries = todoStoreToPlanEntries(getTodoState(this.options.sessionId), ferment)
+		if (ferment) {
+			const entries = todoStoreToPlanEntries(getTodoState(this.options.sessionId), ferment)
+			if (entries.length === 0) return
+			const plan: ActivePlan = { planId: ferment.id, entries }
+			this.setActivePlan(plan)
+			this.emit(plan.entries)
+			return
+		}
+		// No ferment — resume from global-scope todos (plan-mode path).
+		// Gated on approval: a fresh tracker after `loadSession` never replays
+		// the pre-restart scratchpad, since the approval event fired before
+		// this tracker existed.
+		if (!this.planExecutionApproved) return
+		const entries = globalTodosToPlanEntries(getTodoState(this.options.sessionId))
 		if (entries.length === 0) return
-		const plan: ActivePlan = { planId: ferment.id, entries }
+		const plan: ActivePlan = { planId: PLAN_MODE_PLAN_ID, entries }
 		this.setActivePlan(plan)
 		this.emit(plan.entries)
+	}
+
+	private onPlanApproved(raw: unknown): void {
+		// Payload is informational (plan path for logging); the approval itself
+		// is the signal. No payload validation needed beyond consumption.
+		const _payload = raw as PermissionPlanApprovedPayload
+		this.planExecutionApproved = true
 	}
 
 	private onPhaseStarted(raw: unknown): void {
@@ -219,16 +319,37 @@ export class AcpPlanTracker {
 	}
 
 	private onTodoStoreChanged(emitterSessionId: string): void {
-		if (!this.activePlan) return
 		if (emitterSessionId !== this.options.sessionId) return
 		const ferment = this.getActiveFerment()
-		if (!ferment || ferment.id !== this.activePlan.planId) return
-		const plan: ActivePlan = {
-			planId: ferment.id,
-			entries: todoStoreToPlanEntries(getTodoState(this.options.sessionId), ferment),
+
+		// Ferment path: if a ferment is active and we already have a ferment
+		// plan, update it from ferment-scoped todos.
+		if (ferment && this.activePlan && ferment.id === this.activePlan.planId) {
+			const plan: ActivePlan = {
+				planId: ferment.id,
+				entries: todoStoreToPlanEntries(getTodoState(this.options.sessionId), ferment),
+			}
+			this.setActivePlan(plan)
+			this.emit(plan.entries)
+			return
 		}
-		this.setActivePlan(plan)
-		this.emit(plan.entries)
+
+		// Plan-mode path: no ferment active — emit from global-scope todos, but
+		// only after the user approved a plan-mode plan. Pre-approval todos are
+		// the agent's planning scratchpad (research steps, open questions), and
+		// ad-hoc todos from unrelated work are noise — neither belongs in the
+		// client's plan panel. If a ferment just started, the PHASE_STARTED
+		// handler will have already set activePlan to the ferment plan, and the
+		// guard above routes updates to the ferment path.
+		if (!ferment && this.planExecutionApproved) {
+			const entries = globalTodosToPlanEntries(getTodoState(this.options.sessionId))
+			// Only emit when we have global todos OR when clearing a previously
+			// active plan-mode plan (entries went from non-empty to empty).
+			if (entries.length === 0 && this.activePlan?.planId !== PLAN_MODE_PLAN_ID) return
+			const plan: ActivePlan = { planId: PLAN_MODE_PLAN_ID, entries }
+			this.setActivePlan(plan)
+			this.emit(plan.entries)
+		}
 	}
 
 	private emit(entries: PlanEntry[]): void {
