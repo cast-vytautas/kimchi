@@ -78,12 +78,12 @@ describe("default session factory/loader _meta wiring", () => {
 		return { extensionFactories: [], agentDir, ...extra }
 	}
 
-	it("defaultSessionFactory threads _meta['kimchi.dev'].systemPrompt into DefaultResourceLoader.appendSystemPrompt", async () => {
+	it("defaultSessionFactory threads _meta['kimchi.dev'].appendSystemPrompt into DefaultResourceLoader.appendSystemPrompt", async () => {
 		const factory = defaultSessionFactory(makeOptions())
 		await factory({
 			cwd,
 			mcpServers: [],
-			_meta: { "kimchi.dev": { systemPrompt: "You are a worker under AO supervision." } },
+			_meta: { "kimchi.dev": { appendSystemPrompt: "You are a worker under AO supervision." } },
 		})
 		expect(capturedLoaderOptions).toHaveLength(1)
 		expect(invokeCapturedOverride()).toEqual(["You are a worker under AO supervision."])
@@ -94,7 +94,7 @@ describe("default session factory/loader _meta wiring", () => {
 		await factory({
 			cwd,
 			mcpServers: [],
-			_meta: { "kimchi.dev": { systemPrompt: "meta prompt" } },
+			_meta: { "kimchi.dev": { appendSystemPrompt: "meta prompt" } },
 		})
 		expect(capturedLoaderOptions).toHaveLength(1)
 		expect(invokeCapturedOverride()).toEqual(["cli base prompt", "meta prompt"])
@@ -109,7 +109,7 @@ describe("default session factory/loader _meta wiring", () => {
 		expect(invokeCapturedOverride()).toEqual([])
 	})
 
-	it("defaultSessionLoader threads _meta['kimchi.dev'].systemPrompt identically", async () => {
+	it("defaultSessionLoader threads _meta['kimchi.dev'].appendSystemPrompt identically", async () => {
 		const sessionId = "wiring-load-1"
 		const sessionDir = join(agentDir, "sessions", encodeCwdDir(cwd))
 		mkdirSync(sessionDir, { recursive: true })
@@ -128,7 +128,7 @@ describe("default session factory/loader _meta wiring", () => {
 			sessionId,
 			cwd,
 			mcpServers: [],
-			_meta: { "kimchi.dev": { systemPrompt: "Loaded sessions get the same prompt." } },
+			_meta: { "kimchi.dev": { appendSystemPrompt: "Loaded sessions get the same prompt." } },
 		})
 		expect(capturedLoaderOptions).toHaveLength(1)
 		expect(invokeCapturedOverride()).toEqual(["Loaded sessions get the same prompt."])

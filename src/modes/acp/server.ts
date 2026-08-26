@@ -142,7 +142,7 @@ export interface RunAcpOptions {
 	/**
 	 * Content of the `--append-system-prompt` CLI flag, forwarded verbatim to
 	 * every session's DefaultResourceLoader. When a client also sends
-	 * `_meta["kimchi.dev"].systemPrompt`, meta content is appended after this.
+	 * `_meta["kimchi.dev"].appendSystemPrompt`, meta content is appended after this.
 	 */
 	appendSystemPrompt?: string[]
 	/** Override for tests. Defaults to the pi-coding-agent-backed factory. */
@@ -1813,7 +1813,7 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions, params
 			if (cachedSkillListBlock === undefined) {
 				cachedSkillListBlock = buildSkillListBlock(cwd)
 			}
-			// CLI flag content first, then _meta["kimchi.dev"].systemPrompt,
+			// CLI flag content first, then _meta["kimchi.dev"].appendSystemPrompt,
 			// then the skill list block (matches upstream override behaviour).
 			return [
 				...(resolveAcpAppendSystemPrompt(params, options) ?? []),
@@ -1914,16 +1914,22 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 }
 
 /**
- * Extracts `_meta["kimchi.dev"].systemPrompt` from an ACP request and merges
- * it with the `--append-system-prompt` CLI flag content (CLI flag first, meta
- * second) into the array DefaultResourceLoader appends to the composed system
- * prompt via the same appendSystemPrompt mechanism the CLI flag uses.
+ * Extracts `_meta["kimchi.dev"].appendSystemPrompt` from an ACP request and
+ * merges it with the `--append-system-prompt` CLI flag content (CLI flag first,
+ * meta second) into the array DefaultResourceLoader appends to the composed
+ * system prompt via the same appendSystemPrompt mechanism the CLI flag uses.
+ *
+ * The key is deliberately named `appendSystemPrompt` — matching the CLI flag
+ * and the pi-mono resource-loader option — because the meta value is *appended*
+ * to the composed system prompt, never replacing it. This keeps the plain
+ * `systemPrompt` name free should a replace-the-system-prompt API ever be
+ * exposed over `_meta`.
  *
  * Returns `undefined` when neither source contributes anything, so sessions
- * created without `_meta["kimchi.dev"].systemPrompt` behave exactly as before.
- * The `_meta` namespace mirrors CAPABILITIES_KEY (`kimchi.dev`) — ACP reserves
- * `_meta` (additionalProperties: true) for custom data because "Implementations
- * MUST NOT add any custom fields at the root of a type".
+ * created without `_meta["kimchi.dev"].appendSystemPrompt` behave exactly as
+ * before. The `_meta` namespace mirrors CAPABILITIES_KEY (`kimchi.dev`) — ACP
+ * reserves `_meta` (additionalProperties: true) for custom data because
+ * "Implementations MUST NOT add any custom fields at the root of a type".
  */
 export function resolveAcpAppendSystemPrompt(
 	params: { _meta?: unknown },
@@ -1932,7 +1938,7 @@ export function resolveAcpAppendSystemPrompt(
 	const kimchiMeta = (params._meta as Record<string, unknown> | null | undefined)?.[CAPABILITIES_KEY]
 	const metaPrompt =
 		typeof kimchiMeta === "object" && kimchiMeta !== null
-			? (kimchiMeta as Record<string, unknown>).systemPrompt
+			? (kimchiMeta as Record<string, unknown>).appendSystemPrompt
 			: undefined
 	const metaEntries = typeof metaPrompt === "string" && metaPrompt.trim() !== "" ? [metaPrompt] : []
 	const combined = [...(options.appendSystemPrompt ?? []), ...metaEntries]
