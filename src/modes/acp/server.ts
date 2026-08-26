@@ -59,6 +59,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
+import { defaultFermentRuntime } from "../../extensions/ferment/runtime.js"
 import { KIMCHI_PROVIDER_ID } from "../../extensions/login/flow.js"
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult } from "../../extensions/mcp-adapter/types.js"
@@ -94,6 +95,7 @@ import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
+import { AcpPlanTracker, type ActivePlan } from "./plans.js"
 import {
 	type AcpSkillInfo,
 	buildSkillAvailableCommands,
@@ -205,6 +207,20 @@ type SessionRecord = {
 	 * resolved and skill content injected when the user invokes one.
 	 */
 	skillCommands: Map<string, AcpSkillInfo>
+	/**
+	 * The plan currently being advertised via ACP `plan` sessionUpdates, if
+	 * any. Only set while a ferment is driving structured plan progress —
+	 * the execute path (plan approved without a ferment) deliberately emits
+	 * nothing. `planId` is the ferment id, kept for ACP v2 (`plan_update`
+	 * with `PlanItems`) readiness.
+	 */
+	activePlan?: ActivePlan
+	/**
+	 * Tracks ferment lifecycle events + ferment-scoped todo store changes and
+	 * emits `plan` sessionUpdates for this session. Started after extensions
+	 * are bound, stopped in disposeSessionRecord.
+	 */
+	planTracker?: AcpPlanTracker
 }
 
 /** Options for {@link KimchiAcpAgent.disposeSessionRecord}. */
@@ -440,6 +456,7 @@ export class KimchiAcpAgent implements Agent {
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
 			this.sessions.set(sessionId, record)
+			this.startPlanTracker(record, sessionId)
 
 			this.sendAvailableCommandsUpdate(sessionId)
 
@@ -488,6 +505,28 @@ export class KimchiAcpAgent implements Agent {
 				session.setActiveToolsByName([...active, "Skill"])
 			}
 		}
+	}
+
+	/**
+	 * Start emitting ACP `plan` sessionUpdates driven by the ferment
+	 * lifecycle. The tracker subscribes to FERMENT_EVENTS.PHASE_STARTED on the
+	 * same pi.events bus the ferment todo-sync bridge uses (exposed via
+	 * defaultFermentRuntime.events after bindExtensions), and to the process-
+	 * level todo store. Sessions without a running ferment never emit a plan.
+	 * Called after the record is registered so a tracker start failure can't
+	 * leave a half-registered session.
+	 */
+	private startPlanTracker(record: SessionRecord, sessionId: string): void {
+		const tracker = new AcpPlanTracker({
+			sessionId,
+			events: defaultFermentRuntime.events,
+			send: (params) => this.send(params),
+			onActivePlanChanged: (plan) => {
+				record.activePlan = plan
+			},
+		})
+		tracker.start()
+		record.planTracker = tracker
 	}
 
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
@@ -684,6 +723,12 @@ export class KimchiAcpAgent implements Agent {
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sid, event))
 			this.sessions.set(sid, record)
+			this.startPlanTracker(record, sid)
+			// A resumed session mid-ferment never re-fires PHASE_STARTED for the
+			// already-active phase, so the tracker also snapshots from the
+			// restored todo store (gated on an active ferment — emits nothing
+			// when there is none or only global-scope todos survived).
+			record.planTracker?.emitRestoredSnapshot()
 
 			// Seed the block counter from the persisted branch so replay emits the
 			// same messageIds the live turn would have — and so any new block the
@@ -710,6 +755,7 @@ export class KimchiAcpAgent implements Agent {
 			const existing = this.sessions.get(sid)
 			if (existing) {
 				this.sessions.delete(sid)
+				existing.planTracker?.stop()
 				existing.unsubscribe()
 			}
 			session.dispose()
@@ -885,6 +931,7 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
+		entry.planTracker?.stop()
 		if (!opts.alreadyUnsubscribed) entry.unsubscribe()
 		// Emit session_shutdown to extensions and await all handlers before
 		// calling dispose(). dispose() is synchronous and returns void, so async

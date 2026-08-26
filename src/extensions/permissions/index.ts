@@ -423,6 +423,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	function executePlan(planPath: string | undefined, planText: string): void {
+		// Notify subscribers (e.g. the ACP plan tracker) that planning ended and
+		// the approved plan is now executing — pre-approval planning todos must
+		// not be reported as plan progress.
+		pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
 		// Send the approved plan as the execution trigger. No compaction needed —
 		// the plan text is already in context from the planning conversation.
 		const planRef = planPath ? `\n\nApproved plan saved to: ${planPath}` : ""
