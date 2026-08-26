@@ -500,7 +500,7 @@ export class KimchiAcpAgent implements Agent {
 				contentIndexToBlockId: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
-				skillCommands: new Map(discoverAcpSkillCommands(session.sessionManager.getCwd()).map((s) => [s.name, s])),
+				skillCommands: new Map(discoverAcpSkillCommands(session.resourceLoader).map((s) => [s.name, s])),
 			}
 			registerAcpPrompter(
 				sessionId,
@@ -770,7 +770,7 @@ export class KimchiAcpAgent implements Agent {
 				contentIndexToBlockId: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
-				skillCommands: new Map(discoverAcpSkillCommands(session.sessionManager.getCwd()).map((s) => [s.name, s])),
+				skillCommands: new Map(discoverAcpSkillCommands(session.resourceLoader).map((s) => [s.name, s])),
 			}
 			registerAcpPrompter(
 				sid,
@@ -1812,7 +1812,7 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions, params
 		extensionFactories: options.extensionFactories,
 		appendSystemPromptOverride: () => {
 			if (cachedSkillListBlock === undefined) {
-				cachedSkillListBlock = buildSkillListBlock(cwd)
+				cachedSkillListBlock = buildSkillListBlock(resourceLoader)
 			}
 			// CLI flag content first, then _meta["kimchi.dev"].appendSystemPrompt,
 			// then the skill list block (matches upstream override behaviour).
