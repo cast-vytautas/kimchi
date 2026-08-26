@@ -68,12 +68,12 @@ import {
 	fileChangeToDiffContent,
 	initializeHeadlessTheme,
 	KimchiAcpAgent,
-	resolveAcpAppendSystemPrompt,
 	stripAnsi,
 	toAcpSessionInfo,
 	userMessageText,
 } from "./server.js"
 import { getAcpClientInfo, resetAcpClientInfo } from "./state.js"
+import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 
 function cleanPermissionEnv(): void {
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
