@@ -25,6 +25,7 @@ import {
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
+import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
@@ -482,6 +483,14 @@ ${skillLines}`
 		infrastructureBreakerExtension,
 		omitKimchiMaxTokensExtension,
 	]
+	// Personas that request DAP debugger tools (e.g. Debugger) need the dap
+	// extension registered in the child session: repo-native extensions wired
+	// directly in cli.ts are not discovered by a child DefaultResourceLoader.
+	// The extension registers its tools on the child's session_start, and the
+	// SDK activates them because their names are in the session's tool allowlist.
+	if (toolNames.some((n) => n.startsWith("debug_") || n.startsWith("step_"))) {
+		extensionFactories.push(dapExtension)
+	}
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
