@@ -73,6 +73,7 @@ import {
 	userMessageText,
 } from "./server.js"
 import { getAcpClientInfo, resetAcpClientInfo } from "./state.js"
+import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 
 function cleanPermissionEnv(): void {
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
@@ -6757,5 +6758,64 @@ describe("userMessageText", () => {
 	it("returns empty string for null / non-array user content", () => {
 		expect(userMessageText(null)).toBe("")
 		expect(userMessageText(42)).toBe("")
+	})
+})
+
+describe("resolveAcpAppendSystemPrompt", () => {
+	const noOptions = {}
+
+	it("returns undefined when neither CLI flag nor ACP meta is present (backward compat)", () => {
+		expect(resolveAcpAppendSystemPrompt({}, noOptions)).toBeUndefined()
+		expect(resolveAcpAppendSystemPrompt({ _meta: {} }, noOptions)).toBeUndefined()
+		expect(resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": {} } }, noOptions)).toBeUndefined()
+	})
+
+	it("threads _meta['kimchi.dev'].appendSystemPrompt through for newSession", () => {
+		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "You are a worker under AO supervision." } } }
+		expect(resolveAcpAppendSystemPrompt(params, noOptions)).toEqual(["You are a worker under AO supervision."])
+	})
+
+	it("threads _meta['kimchi.dev'].appendSystemPrompt through identically for loadSession", () => {
+		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "Loaded sessions get the same prompt." } } }
+		expect(resolveAcpAppendSystemPrompt(params, noOptions)).toEqual(["Loaded sessions get the same prompt."])
+	})
+
+	it("appends meta content after CLI flag content when both are present", () => {
+		const params = { _meta: { "kimchi.dev": { appendSystemPrompt: "meta prompt" } } }
+		expect(resolveAcpAppendSystemPrompt(params, { appendSystemPrompt: ["cli one", "cli two"] })).toEqual([
+			"cli one",
+			"cli two",
+			"meta prompt",
+		])
+	})
+
+	it("returns CLI flag content unchanged when no meta is present", () => {
+		expect(resolveAcpAppendSystemPrompt({}, { appendSystemPrompt: ["cli only"] })).toEqual(["cli only"])
+	})
+
+	it("ignores non-string, empty, and whitespace-only meta appendSystemPrompt values", () => {
+		expect(
+			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { appendSystemPrompt: 42 } } }, noOptions),
+		).toBeUndefined()
+		expect(
+			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { appendSystemPrompt: "" } } }, noOptions),
+		).toBeUndefined()
+		expect(
+			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { appendSystemPrompt: "   \n  " } } }, noOptions),
+		).toBeUndefined()
+	})
+
+	it("ignores the plain systemPrompt key — the meta value appends, it never replaces", () => {
+		// The plain `systemPrompt` name is reserved: if a replace-the-system-prompt
+		// API is ever exposed over _meta, it gets its own distinctly named key.
+		expect(
+			resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": { systemPrompt: "ignored" } } }, noOptions),
+		).toBeUndefined()
+	})
+
+	it("tolerates non-object _meta and non-object kimchi.dev payloads", () => {
+		expect(resolveAcpAppendSystemPrompt({ _meta: "nope" }, noOptions)).toBeUndefined()
+		expect(resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": "nope" } }, noOptions)).toBeUndefined()
+		expect(resolveAcpAppendSystemPrompt({ _meta: null }, noOptions)).toBeUndefined()
 	})
 })

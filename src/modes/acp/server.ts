@@ -107,6 +107,7 @@ import {
 	tryParseSkillCommand,
 } from "./skill-commands.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
+import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import { asString, truncate } from "./utils.js"
 
@@ -139,6 +140,12 @@ export type AcpSessionLoader = (params: LoadSessionRequest) => Promise<AgentSess
 export interface RunAcpOptions {
 	extensionFactories: ExtensionFactory[]
 	agentDir: string
+	/**
+	 * Content of the `--append-system-prompt` CLI flag, forwarded verbatim to
+	 * every session's DefaultResourceLoader. When a client also sends
+	 * `_meta["kimchi.dev"].appendSystemPrompt`, meta content is appended after this.
+	 */
+	appendSystemPrompt?: string[]
 	/** Override for tests. Defaults to the pi-coding-agent-backed factory. */
 	sessionFactory?: AcpSessionFactory
 	/** Override for tests. Defaults to {@link defaultSessionLister}. */
@@ -1778,7 +1785,7 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
  * timeout, and load resources. Both the session loader and factory
  * diverge only in how they obtain a SessionManager.
  */
-async function createSessionSettings(cwd: string, options: RunAcpOptions) {
+async function createSessionSettings(cwd: string, options: RunAcpOptions, params: { _meta?: unknown }) {
 	// Construct untrusted first: pi's SettingsManager.create defaults
 	// projectTrusted to TRUE, which would let an untrusted repo's
 	// .pi/settings.json influence HTTP behavior (e.g. disable the idle
@@ -1807,14 +1814,20 @@ async function createSessionSettings(cwd: string, options: RunAcpOptions) {
 			if (cachedSkillListBlock === undefined) {
 				cachedSkillListBlock = buildSkillListBlock(cwd)
 			}
-			return cachedSkillListBlock ? [cachedSkillListBlock] : []
+			// CLI flag content first, then _meta["kimchi.dev"].appendSystemPrompt,
+			// then the skill list block (matches upstream override behaviour).
+			return [
+				...(resolveAcpAppendSystemPrompt(params, options) ?? []),
+				...(cachedSkillListBlock ? [cachedSkillListBlock] : []),
+			]
 		},
 	})
 	await resourceLoader.reload()
 	return { settingsManager, resourceLoader }
 }
 
-function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
+/** Exported for tests: the production session loader used by {@link KimchiAcpAgent}. */
+export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 	return async (params: LoadSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd
 		// Mirror defaultSessionLister: encode cwd inline because pi doesn't
@@ -1889,7 +1902,7 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
@@ -1901,10 +1914,11 @@ function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 	}
 }
 
-function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
+/** Exported for tests: the production session factory used by {@link KimchiAcpAgent}. */
+export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options)
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
