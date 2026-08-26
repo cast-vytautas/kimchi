@@ -1668,7 +1668,7 @@ describe("KimchiAcpAgent usage reporting", () => {
 		expect(result.usage).not.toHaveProperty("thoughtTokens")
 	})
 
-	it("emits a usage_update sessionUpdate with size/used on assistant message_end", async () => {
+	it("emits a usage_update sessionUpdate with size/used at turn end", async () => {
 		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
@@ -1743,12 +1743,13 @@ describe("KimchiAcpAgent usage reporting", () => {
 
 		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
 
-		// Streaming chunks arrived, but no per-turn usage — no assistant
-		// message_end with usage ever fired, so PromptResponse.usage is
-		// undefined. The final emitUsageUpdate at turn end still fires because
-		// contextUsage is set; that's the expected behavior.
+		// Streaming chunks arrived, but no assistant message_end with usage
+		// ever fired, so PromptResponse.usage is undefined. Exactly one
+		// usage_update fires — the final emitUsageUpdate at turn end
+		// (contextUsage is set); none in response to the deltas themselves.
 		expect(updates.some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(true)
 		expect(result.usage).toBeUndefined()
+		expect(usageUpdates()).toHaveLength(1)
 	})
 
 	it("omits PromptResponse.usage when the turn is cancelled before any assistant message", async () => {
