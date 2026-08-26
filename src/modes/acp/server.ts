@@ -1160,6 +1160,11 @@ export class KimchiAcpAgent implements Agent {
 						turn.usage.sawReasoning = true
 					}
 					turn.usage.messages++
+					// Live context-window refresh: a message_end carrying usage means
+					// the session's estimate just moved. Emit here (subject to
+					// emitUsageUpdate's undefined/null skip) so clients track the
+					// context window across chained steps, not just at turn end.
+					this.emitUsageUpdate(entry)
 				}
 				return
 			}

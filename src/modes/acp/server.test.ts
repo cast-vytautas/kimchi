@@ -1668,7 +1668,7 @@ describe("KimchiAcpAgent usage reporting", () => {
 		expect(result.usage).not.toHaveProperty("thoughtTokens")
 	})
 
-	it("emits a usage_update sessionUpdate with size/used at turn end", async () => {
+	it("emits usage_update with size/used on assistant message_end and again at turn end", async () => {
 		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
@@ -1679,11 +1679,34 @@ describe("KimchiAcpAgent usage reporting", () => {
 		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
 
 		const usage = usageUpdates()
-		expect(usage).toHaveLength(1)
+		// One live update on the assistant message_end, one final update at
+		// finalizeTurn — both reflect the same getContextUsage() snapshot here.
+		expect(usage).toHaveLength(2)
 		expect(usage[0].sessionId).toBe(sessionId)
-		expect(usage[0].update).toMatchObject({ sessionUpdate: "usage_update", size: 200000, used: 1234 })
+		expect(usage[1].sessionId).toBe(sessionId)
+		for (const u of usage) {
+			expect(u.update).toMatchObject({ sessionUpdate: "usage_update", size: 200000, used: 1234 })
+		}
 		// PromptResponse.usage is independent of the context-window estimate.
 		expect(result.usage?.inputTokens).toBe(100)
+	})
+
+	it("refreshes the context indicator after each chained assistant message", async () => {
+		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20, cacheRead: 5, cacheWrite: 3 }))
+			// Second chain step (e.g. agent.continue after a tool call).
+			fake.emit(assistantUsageEvent({ input: 50, output: 10, cacheRead: 2, cacheWrite: 1 }))
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		// One usage_update per assistant message_end (2), plus the final
+		// turn-end emission — the indicator follows the turn live instead of
+		// updating only once at the end.
+		expect(usageUpdates()).toHaveLength(3)
 	})
 
 	it("skips usage_update when getContextUsage returns undefined", async () => {
