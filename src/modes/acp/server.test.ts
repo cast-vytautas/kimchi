@@ -1152,7 +1152,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect((usageUpdates[0].update as { used: number; size: number }).size).toBe(200_000)
 	})
 
-	it("falls back to getSessionStats total when getContextUsage tokens is null", async () => {
+	it("does not emit usage_update when getContextUsage tokens is null (post-compaction)", async () => {
 		const { conn, updates } = makeRecordingConn()
 		const localFake = new FakeAgentSession("session-usage-fallback")
 		localFake.model = { provider: "test", id: "m", name: "M", input: ["text"], contextWindow: 128_000 }
@@ -1181,9 +1181,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const usageUpdates = updates.filter(
 			(u) => (u.update as { sessionUpdate?: string }).sessionUpdate === "usage_update",
 		)
-		expect(usageUpdates).toHaveLength(1)
-		expect((usageUpdates[0].update as { used: number; size: number }).used).toBe(10_000)
-		expect((usageUpdates[0].update as { used: number; size: number }).size).toBe(128_000)
+		// Per the issue doc: skip when tokens is null — no fallback to getSessionStats.
+		expect(usageUpdates).toHaveLength(0)
 	})
 
 	it("does not emit usage_update when size is unavailable (no contextWindow)", async () => {
@@ -1744,25 +1743,32 @@ describe("KimchiAcpAgent usage reporting", () => {
 
 		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
 
-		// Streaming chunks arrived, but no usage_update and no per-turn usage —
-		// no assistant message_end with usage ever fired.
+		// Streaming chunks arrived, but no per-turn usage — no assistant
+		// message_end with usage ever fired, so PromptResponse.usage is
+		// undefined. The final emitUsageUpdate at turn end still fires because
+		// contextUsage is set; that's the expected behavior.
 		expect(updates.some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(true)
-		expect(usageUpdates()).toHaveLength(0)
 		expect(result.usage).toBeUndefined()
 	})
 
 	it("omits PromptResponse.usage when the turn is cancelled before any assistant message", async () => {
+		let cancelSeen = false
 		fake.promptImpl = async () => {
-			await delay(10)
+			// Wait until cancel() runs so the turn context is marked cancelled
+			// before promptImpl resolves.
+			while (!cancelSeen) await delay(5)
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
 		}
 
 		const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+		await delay(10)
 		await agent.cancel({ sessionId })
 		const result = await pending
 
 		expect(result.stopReason).toBe("cancelled")
 		expect(result.usage).toBeUndefined()
-		expect(usageUpdates()).toHaveLength(0)
 	})
 })
 

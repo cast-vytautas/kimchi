@@ -1160,11 +1160,6 @@ export class KimchiAcpAgent implements Agent {
 						turn.usage.sawReasoning = true
 					}
 					turn.usage.messages++
-					// The assistant message_end is the turn event that carries
-					// usage; pair it with a live context-window usage_update. Never
-					// emitted from message_update — streaming deltas must not spam
-					// usage.
-					this.sendUsageUpdate(sessionId, entry)
 				}
 				return
 			}
@@ -1490,35 +1485,6 @@ export class KimchiAcpAgent implements Agent {
 		flushText()
 	}
 
-	/**
-	 * Emits a usage_update sessionUpdate mapped from
-	 * `session.getContextUsage()` → ACP UsageUpdate { size, used }. Skipped
-	 * when the session reports no estimate (undefined) or an unknown token
-	 * count (tokens: null, e.g. right after compaction) — ACP requires both
-	 * fields, so there is no null-safe emission.
-	 */
-	private sendUsageUpdate(sessionId: string, entry: SessionRecord): void {
-		// getContextUsage runs inside the synchronous event-emitter path; a
-		// throw here would abort turn processing, so swallow-and-log instead.
-		let ctx: ReturnType<AgentSession["getContextUsage"]>
-		try {
-			ctx = entry.session.getContextUsage()
-		} catch (err) {
-			process.stderr.write(`acp getContextUsage failed: ${String(err)}\n`)
-			return
-		}
-		// tokens is typed number|null, but at runtime a provider edge can also
-		// surface undefined or NaN — ACP requires a real `used`, so skip all three.
-		if (!ctx || typeof ctx.tokens !== "number" || !Number.isFinite(ctx.tokens)) return
-		this.send({
-			sessionId,
-			update: {
-				sessionUpdate: "usage_update",
-				size: ctx.contextWindow,
-				used: ctx.tokens,
-			},
-		})
-	}
 	private send(params: SessionNotification): void {
 		// Fire-and-forget is safe here because the ACP SDK chains every outbound
 		// message onto a shared writeQueue Promise (see @agentclientprotocol/sdk
@@ -1595,15 +1561,16 @@ export class KimchiAcpAgent implements Agent {
 	private emitUsageUpdate(entry: SessionRecord): void {
 		const session = entry.session
 		const ctx = session.getContextUsage()
-		const used = ctx?.tokens ?? session.getSessionStats().tokens.total
-		const size = session.model?.contextWindow ?? ctx?.contextWindow
-		if (used == null || !size) return
+		// Per the issue doc: skip when getContextUsage() returns undefined or
+		// tokens is null (e.g. right after compaction). ACP requires both `used`
+		// and `size`, so there is no null-safe emission.
+		if (!ctx || ctx.tokens === null) return
 		this.send({
 			sessionId: session.sessionId,
 			update: {
 				sessionUpdate: "usage_update",
-				used,
-				size,
+				used: ctx.tokens,
+				size: ctx.contextWindow,
 			},
 		})
 	}
