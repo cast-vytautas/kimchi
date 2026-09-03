@@ -34,10 +34,11 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import { isAutoModel } from "../router/constants.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
-import { trackSubagentSpawned } from "../telemetry/index.js"
+import { type RemoteExecutionStats, trackRemoteExecution, trackSubagentSpawned } from "../telemetry/index.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
@@ -280,8 +281,8 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 	}
 
 	const callbacks = {
-		onToolActivity: (activity: { type: "start" | "end"; toolName: string }) => {
-			if (activity.type === "start") {
+		onToolActivity: (activity: { toolName: string; status?: "pending" | "in_progress" | "completed" | "failed" }) => {
+			if (activity.status === "in_progress") {
 				state.activeTools.set(`${activity.toolName}_${Date.now()}`, activity.toolName)
 			} else {
 				for (const [key, name] of state.activeTools) {
@@ -521,9 +522,15 @@ export function getActiveManager(): AgentManager | undefined {
 
 /** Options for spawnRemoteAgent. */
 export interface SpawnRemoteAgentOptions {
-	/** Called with the agent id as soon as it is spawned, before the promise resolves.
-	 *  Use this to register abort handlers that need the id during the startup phase. */
-	onSpawn?: (id: string) => void
+	/** When true, spawn as a background agent — returns immediately with the agent ID.
+	 *  The caller will be notified on completion. Default: false (foreground). */
+	background?: boolean
+	/** Origin label for the remote completion steer message (e.g. "plan", "ferment plan"). Default: "plan". */
+	origin?: string
+	/** Ferment ID when the cloud agent is executing a ferment plan. Used to
+	 *  pause the ferment during cloud execution and complete/resume it on
+	 *  completion. */
+	fermentId?: string
 }
 
 /** Spawn function type — set during agents extension init. */
@@ -534,19 +541,30 @@ let spawnRemoteAgentFn:
 			prompt: string,
 			description: string,
 			opts?: SpawnRemoteAgentOptions,
-	  ) => Promise<{ id: string; result: string }>)
+	  ) => Promise<{ id: string; result: string; backgrounded?: boolean }>)
 	| undefined
+
+/** Build numeric stats for remote_execution.completed/failed telemetry from a finished record. */
+export function buildRemoteExecutionStats(record: AgentRecord): RemoteExecutionStats {
+	return {
+		duration_ms: record.completedAt != null ? record.completedAt - record.startedAt : 0,
+		tool_calls: record.toolUses,
+		turns: record.lastTurnCount,
+		input_tokens: record.lifetimeUsage.input,
+		output_tokens: record.lifetimeUsage.output,
+	}
+}
 
 /** Spawns a foreground remote agent with full UI streaming support.
  *  Returns the agent id (for targeted abort) and the result text.
- *  Pass `onSpawn` to get the agent id before the promise resolves. */
+ */
 export async function spawnRemoteAgent(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	prompt: string,
 	description: string,
 	opts?: SpawnRemoteAgentOptions,
-): Promise<{ id: string; result: string }> {
+): Promise<{ id: string; result: string; backgrounded?: boolean }> {
 	if (!spawnRemoteAgentFn) throw new Error("Agent manager not initialized")
 	return spawnRemoteAgentFn(pi, ctx, prompt, description, opts)
 }
@@ -975,6 +993,39 @@ export default function (pi: ExtensionAPI) {
 				return
 			}
 
+			// Remote agents spawned as background get the post-completion dropdown
+			// (Review / Sync / Done) instead of the normal nudge path.
+			if (record.triggersRemoteCompletion) {
+				record.triggersRemoteCompletion = false
+				trackRemoteExecution(
+					isError ? "failed" : "completed",
+					record.remoteOrigin ?? "plan",
+					buildRemoteExecutionStats(record),
+				)
+				// spawnCtx is captured at spawn time and is always valid for this
+				// agent — don't fall back to a stale global context.
+				const completionCtx = record.spawnCtx
+				if (completionCtx) {
+					void handleRemoteCompletion(pi, completionCtx, record.result ?? "", record.remoteOrigin ?? "plan", {
+						transcriptPath: record.outputFile,
+						agentId: record.id,
+						remoteSession: record.remoteSession,
+						fermentId: record.fermentId,
+					}).catch((err) => {
+						currentUi?.notify(
+							`Remote completion failed: ${err instanceof Error ? err.message : String(err)}`,
+							"warning",
+						)
+					})
+				} else {
+					currentUi?.notify("Remote agent completed but result could not be surfaced (no active context).", "warning")
+				}
+				agentActivity.delete(record.id)
+				widget.markFinished(record.id)
+				widget.update()
+				return
+			}
+
 			const result = groupJoin.onAgentComplete(record)
 			if (result === "pass") {
 				sendIndividualNudge(record)
@@ -1041,7 +1092,7 @@ export default function (pi: ExtensionAPI) {
 
 		const spawnOpts = {
 			description: desc,
-			isBackground: false,
+			isBackground: opts?.background ?? false,
 			remote: true,
 			maxTurns: 1,
 			...transcriptCallbacks,
@@ -1050,6 +1101,9 @@ export default function (pi: ExtensionAPI) {
 
 		const record = manager.getRecord(id)
 		if (record) {
+			record.spawnCtx = ctx
+			record.remoteOrigin = opts?.origin ?? "plan"
+			record.fermentId = opts?.fermentId
 			record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 			writeInitialEntry(record.outputFile, id, promptText, ctx.cwd)
 			setOutputPath(record.outputFile, id)
@@ -1058,15 +1112,61 @@ export default function (pi: ExtensionAPI) {
 		widget.ensureTimer()
 		widget.update()
 
-		// Notify the caller of the agent id immediately so abort handlers
-		// (e.g. Ctrl+X) can target this agent during the startup phase.
-		opts?.onSpawn?.(id)
+		// Background mode: return immediately — the caller will be notified on completion.
+		if (opts?.background) {
+			if (record) record.triggersRemoteCompletion = true
+			return { id, result: "", backgrounded: true }
+		}
+
+		// Set up detach resolver so Ctrl+B can background the remote agent mid-run.
+		let detachResolve!: () => void
+		const detachPromise = new Promise<void>((r) => {
+			detachResolve = r
+		})
+		if (record) record.detachResolver = detachResolve
 
 		const rec = manager.getRecord(id)
 		if (!rec?.promise) return { id, result: "" }
 		try {
+			const raceResult = await Promise.race([
+				rec.promise.then(() => "completed" as const),
+				detachPromise.then(() => "detached" as const),
+			])
+
+			if (raceResult === "detached") {
+				// Remote agent was backgrounded via Ctrl+B.
+				// _runRemote's promise is still in flight — it will resolve naturally
+				// and the completion path in startAgent handles cleanup + notification.
+				if (record) record.triggersRemoteCompletion = true
+				flushRemaining()
+				widget.ensureTimer()
+				widget.update()
+
+				pi.events.emit("subagents:backgrounded", {
+					id,
+					type: "Remote-Runner",
+					description: desc,
+					visibility: "user",
+				})
+
+				const outputFile = record?.outputFile ?? ""
+				return {
+					id,
+					backgrounded: true,
+					result:
+						`Agent sent to background by the user (Ctrl+B).\n` +
+						`Agent ID: ${id}\n` +
+						`Type: Remote-Runner\n` +
+						`Description: ${desc}\n` +
+						`${outputFile ? `Output file: ${outputFile}\n` : ""}` +
+						`The agent continues running in the background. You will be notified when it completes.`,
+				}
+			}
+
+			// Normal completion path
+			if (record) record.detachResolver = undefined
 			const result = await rec.promise
-			return { id, result }
+			return { id, result, backgrounded: false }
 		} finally {
 			// Flush any buffered transcript entries on completion or error so
 			// nothing is lost if the remote run is aborted or fails mid-stream.
