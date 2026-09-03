@@ -942,14 +942,10 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(fake.clearQueueCalls).toBe(1)
 	})
 
-	// Regression: cancel() must drain the queue BEFORE awaiting the abort.
-	// pi-mono chains queued steering messages into the running prompt —
-	// session.prompt() resolves only after all chained calls — so awaiting
-	// abort() first lets every queued steer self-deliver into history one
-	// reply at a time (observed in dogfooding: steers landing +3.7s/+10.9s
-	// after the abort, each with a full reply). The fake's abortImpl
-	// emulates that chaining by delivering whatever is still pending.
-	it("never delivers queued steers after cancel", async () => {
+	// Arms a turn that hangs until abort() runs — emulating a still-running
+	// turn when session/cancel arrives. onAbort runs inside abortImpl after
+	// the hang flag flips, while prompt() is still parked.
+	function armHangingTurn(onAbort?: () => void): void {
 		let cancelSeen = false
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
@@ -958,12 +954,25 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		}
 		fake.abortImpl = async () => {
 			cancelSeen = true
-			// Emulate pi-mono's steering chain: a waiting abort() gives every
-			// still-queued steer time to deliver into the session's history.
+			onAbort?.()
+		}
+	}
+
+	// Regression: cancel() must drain the queue BEFORE awaiting the abort.
+	// pi-mono chains queued steering messages into the running prompt —
+	// session.prompt() resolves only after all chained calls — so awaiting
+	// abort() first lets every queued steer self-deliver into history one
+	// reply at a time (observed in dogfooding: steers landing +3.7s/+10.9s
+	// after the abort, each with a full reply). The fake's abortImpl
+	// emulates that chaining by delivering whatever is still pending.
+	it("never delivers queued steers after cancel", async () => {
+		// Emulate pi-mono's steering chain: a waiting abort() gives every
+		// still-queued steer time to deliver into the session's history.
+		armHangingTurn(() => {
 			for (const text of fake.pendingSteers) {
 				fake.emulatedHistory.push(text)
 			}
-		}
+		})
 
 		const promptP = agent.prompt({
 			sessionId,
@@ -985,15 +994,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	// marked cancelled, and leaving the agent running would burn tokens
 	// until the LLM responds. try/finally guarantees abort runs regardless.
 	it("still aborts when clearQueue throws", async () => {
-		let cancelSeen = false
-		fake.promptImpl = async () => {
-			fake.emit({ type: "agent_start" })
-			while (!cancelSeen) await delay(5)
-			fake.emit(agentEnd())
-		}
-		fake.abortImpl = async () => {
-			cancelSeen = true
-		}
+		armHangingTurn()
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 		fake.clearQueue = (): { steering: string[]; followUp: string[] } => {
 			throw new Error("clearQueue boom")
 		}
@@ -1010,6 +1012,13 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const result = await promptP
 		expect(result.stopReason).toBe("cancelled")
 		expect(fake.aborted).toBe(true)
+		// The drain failure is logged, not silently swallowed — a recurring
+		// clearQueue failure must be observable, not re-leak steers quietly.
+		expect(errorSpy).toHaveBeenCalledWith(
+			"kimchi acp: clearQueue() failed during cancel; aborting anyway",
+			expect.any(Error),
+		)
+		errorSpy.mockRestore()
 	})
 
 	// If session.prompt throws (pre-turn validation, config error, etc.), the

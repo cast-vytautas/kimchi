@@ -984,16 +984,20 @@ export class KimchiAcpAgent implements Agent {
 		// with a full reply while we wait for idle. clearQueue() is synchronous,
 		// so running it first drops undelivered steers before the chain can
 		// drain them. Mirrors the TUI's Escape → clearAllQueues() behaviour.
-		// Drain before abort (see comment above). Wrap in try/catch/finally so
-		// a clearQueue() failure can never skip the abort — the turn is already
-		// marked cancelled, and leaving the agent running would burn tokens
-		// until the LLM responds. cancel() is a notification (fire-and-forget),
-		// so swallowing the error avoids an unhandled rejection; the worst case
-		// is a partially-drained queue, which is no worse than before the fix.
+		// The drain is wrapped in try/catch/finally so a clearQueue() failure
+		// can never skip the abort — the turn is already marked cancelled, and
+		// leaving the agent running would burn tokens until the LLM responds.
+		// cancel() is a notification (fire-and-forget), so the error is caught
+		// and logged rather than rethrown as an unhandled rejection; the worst
+		// case is a partially-drained queue, which is no worse than before the
+		// fix.
 		try {
 			entry.session.clearQueue()
-		} catch {
-			// clearQueue failure is non-fatal — abort must still run.
+		} catch (err) {
+			// clearQueue failure is non-fatal — abort must still run. Log so a
+			// recurring drain failure is observable instead of silently leaking
+			// queued steers into history again.
+			console.error("kimchi acp: clearQueue() failed during cancel; aborting anyway", err)
 		} finally {
 			await entry.session.abort()
 		}
