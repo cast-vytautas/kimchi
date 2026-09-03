@@ -151,6 +151,13 @@ class FakeAgentSession {
 	aborted = false
 	clearQueueCalls = 0
 	clearQueueReturn = { steering: [] as string[], followUp: [] as string[] }
+	// Steering-seam state for the cancel-ordering regression: steer() records
+	// as pending, clearQueue() drops what was never delivered, and `order`
+	// pins the clear-before-abort sequence. `emulatedHistory` receives
+	// whatever an abort's wait lets pi-mono's steering chain deliver.
+	pendingSteers: string[] = []
+	emulatedHistory: string[] = []
+	order: string[] = []
 	model: FakeModel | undefined = {
 		provider: "test",
 		id: "test-model",
@@ -266,11 +273,18 @@ class FakeAgentSession {
 
 	async abort(): Promise<void> {
 		this.aborted = true
+		this.order.push("abort")
 		await this.abortImpl()
+	}
+
+	async steer(text: string, _images?: unknown[]): Promise<void> {
+		this.pendingSteers.push(text)
 	}
 
 	clearQueue(): { steering: string[]; followUp: string[] } {
 		this.clearQueueCalls++
+		this.order.push("clearQueue")
+		this.pendingSteers = []
 		return this.clearQueueReturn
 	}
 
@@ -926,6 +940,45 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		await promptP
 		expect(fake.aborted).toBe(true)
 		expect(fake.clearQueueCalls).toBe(1)
+	})
+
+	// Regression: cancel() must drain the queue BEFORE awaiting the abort.
+	// pi-mono chains queued steering messages into the running prompt —
+	// session.prompt() resolves only after all chained calls — so awaiting
+	// abort() first lets every queued steer self-deliver into history one
+	// reply at a time (observed in dogfooding: steers landing +3.7s/+10.9s
+	// after the abort, each with a full reply). The fake's abortImpl
+	// emulates that chaining by delivering whatever is still pending.
+	it("never delivers queued steers after cancel", async () => {
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!cancelSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+			// Emulate pi-mono's steering chain: a waiting abort() gives every
+			// still-queued steer time to deliver into the session's history.
+			for (const text of fake.pendingSteers) {
+				fake.emulatedHistory.push(text)
+			}
+		}
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "t1" }],
+		})
+		await delay(10)
+		await fake.steer("t2")
+		await fake.steer("t3")
+
+		await agent.cancel({ sessionId })
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		expect(fake.emulatedHistory).toEqual([])
+		expect(fake.order).toEqual(["clearQueue", "abort"])
 	})
 
 	// If session.prompt throws (pre-turn validation, config error, etc.), the

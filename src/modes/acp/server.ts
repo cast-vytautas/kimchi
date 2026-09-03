@@ -977,10 +977,15 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
-		await entry.session.abort()
-		// Drain the steer/follow-up queue so queued text doesn't leak into the
-		// next prompt. Mirrors the TUI's Escape → clearAllQueues() behaviour.
+		// Drain the steer/follow-up queue BEFORE awaiting the abort. pi-mono
+		// chains queued steering messages into the running prompt —
+		// session.prompt() resolves only after all chained calls — so awaiting
+		// abort() first lets every still-queued steer self-deliver into history
+		// with a full reply while we wait for idle. clearQueue() is synchronous,
+		// so running it first drops undelivered steers before the chain can
+		// drain them. Mirrors the TUI's Escape → clearAllQueues() behaviour.
 		entry.session.clearQueue()
+		await entry.session.abort()
 	}
 
 	async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
