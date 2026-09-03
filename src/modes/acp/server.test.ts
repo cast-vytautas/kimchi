@@ -981,6 +981,37 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(fake.order).toEqual(["clearQueue", "abort"])
 	})
 
+	// clearQueue() throwing must not skip the abort — the turn is already
+	// marked cancelled, and leaving the agent running would burn tokens
+	// until the LLM responds. try/finally guarantees abort runs regardless.
+	it("still aborts when clearQueue throws", async () => {
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!cancelSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+		fake.clearQueue = (): { steering: string[]; followUp: string[] } => {
+			throw new Error("clearQueue boom")
+		}
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "t1" }],
+		})
+		await delay(10)
+
+		// cancel() must resolve — clearQueue's error is caught so abort still runs.
+		await agent.cancel({ sessionId })
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		expect(fake.aborted).toBe(true)
+	})
+
 	// If session.prompt throws (pre-turn validation, config error, etc.), the
 	// outer RPC promise must reject — not hang — regardless of whether any
 	// events were emitted before the throw.
