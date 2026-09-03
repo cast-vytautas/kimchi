@@ -63,6 +63,7 @@ import { clearApiKey, writeApiKey } from "../../config.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
+import { clearCallerMcpServers, peekCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "../../extensions/permissions/mode.js"
@@ -100,6 +101,7 @@ function cleanPermissionEnv(): void {
 	// Reset the CLI args cache so permission mode flags (--plan/--auto/--yolo)
 	// set by one test don't leak into another via the module-level cache.
 	populateCliArgs([])
+	clearCallerMcpServers()
 }
 
 beforeEach(cleanPermissionEnv)
@@ -1667,29 +1669,34 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		await localAgent.shutdown()
 	})
 
-	// mcpServers is declared in the ACP request shape but kimchi has no hook to
-	// wire them into a live session — pi-coding-agent loads MCP servers from its
-	// own config. Silently dropping them would leave the client believing those
-	// servers are available; reject up-front with invalidParams instead.
-	it("rejects newSession when mcpServers is non-empty", async () => {
+	// mcpServers is now accepted per the ACP v1 spec. The caller-supplied
+	// servers are pushed onto the caller-servers registry and consumed by
+	// initializeMcp during session_start. This test verifies the session is
+	// created successfully (factory called) and the servers land in the registry.
+	it("accepts newSession with non-empty mcpServers and registers them", async () => {
 		const factoryCalled = { count: 0 }
 		const factory: AcpSessionFactory = async () => {
 			factoryCalled.count++
-			return asSession(new FakeAgentSession("unused"))
+			return asSession(new FakeAgentSession("with-mcp"))
 		}
 		const localAgent = new KimchiAcpAgent(makeConn(), {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
-		await expect(
-			localAgent.newSession({
-				cwd: "/tmp",
-				// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-				mcpServers: [{ name: "x", command: "x", args: [] } as any],
-			}),
-		).rejects.toMatchObject({ code: -32602 })
-		expect(factoryCalled.count).toBe(0)
+		// Clear any stale entries from beforeEach's newSession call so peek
+		// returns only this test's entry.
+		clearCallerMcpServers()
+		const res = await localAgent.newSession({
+			cwd: "/tmp",
+			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
+			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+		})
+		expect(res.sessionId).toBe("with-mcp")
+		expect(factoryCalled.count).toBe(1)
+		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
+		// so the caller-servers entry stays in the registry — verify it was set.
+		expect(peekCallerMcpServers("with-mcp")).toEqual({ x: { command: "x", args: [] } })
 	})
 
 	// Empty array is fine — equivalent to "no per-session servers requested".
@@ -5801,22 +5808,23 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(init.agentCapabilities?.sessionCapabilities?.close).toEqual({})
 	})
 
-	it("rejects loadSession when mcpServers is non-empty (does not invoke loader)", async () => {
+	it("accepts loadSession with non-empty mcpServers (invokes loader)", async () => {
 		const loaderCalls = { count: 0 }
 		const loader: AcpSessionLoader = async () => {
 			loaderCalls.count++
-			return asSession(new FakeAgentSession("unused"))
+			return asSession(new FakeAgentSession("s1"))
 		}
 		const agent = makeAgent(loader)
-		await expect(
-			agent.loadSession({
-				sessionId: "s1",
-				cwd: "/tmp",
-				// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-				mcpServers: [{ name: "x", command: "x", args: [] } as any],
-			}),
-		).rejects.toMatchObject({ code: -32602 })
-		expect(loaderCalls.count).toBe(0)
+		await agent.loadSession({
+			sessionId: "s1",
+			cwd: "/tmp",
+			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
+			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+		})
+		expect(loaderCalls.count).toBe(1)
+		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
+		// so the caller-servers entry stays in the registry — verify it was set.
+		expect(peekCallerMcpServers("s1")).toEqual({ x: { command: "x", args: [] } })
 	})
 
 	it("replays and returns an already loaded session without reopening it", async () => {
