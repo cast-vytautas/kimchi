@@ -16,6 +16,7 @@ import { Type } from "typebox"
 import {
 	ensureFileOpen,
 	getOrCreateClient,
+	pullDiagnostics,
 	refreshFile,
 	sendRequest,
 	shutdownAll,
@@ -304,14 +305,26 @@ export default function (pi: ExtensionAPI) {
 				await ensureFileOpen(client, resolved)
 			} else {
 				await refreshFile(client, resolved)
-				// Wait for diagnostics to arrive via the LSP publishDiagnostics
-				// notification, with a deadline fallback. Resolves false on
-				// timeout/abort so we don't block forever on a slow server.
 				const uri = fileToUri(resolved)
-				const gotDiagnostics = await waitForDiagnostics(client, uri, {
-					signal: combinedSignal,
-					timeoutMs: DIAG_WAIT_TIMEOUT_MS,
-				})
+				// Diagnostics arrive via push (publishDiagnostics) on most servers
+				// — wait for the notification with a deadline fallback. Pull-model
+				// servers (e.g. the TypeScript 7 native server) never push, so fetch
+				// explicitly. Both paths are best-effort: timeout/abort/request
+				// failure resolves false and the sync continues.
+				let gotDiagnostics = false
+				if (server.pullDiagnostics) {
+					try {
+						await pullDiagnostics(client, uri)
+						gotDiagnostics = true
+					} catch {
+						gotDiagnostics = false
+					}
+				} else {
+					gotDiagnostics = await waitForDiagnostics(client, uri, {
+						signal: combinedSignal,
+						timeoutMs: DIAG_WAIT_TIMEOUT_MS,
+					})
+				}
 				if (gotDiagnostics) {
 					const entry = client.diagnostics.get(uri)
 					const diags = entry?.diagnostics ?? []
@@ -376,9 +389,20 @@ export default function (pi: ExtensionAPI) {
 			await refreshFile(client, filePath)
 
 			const waitMs = Math.min(params.wait_ms ?? 2000, 10000)
-			await new Promise((resolve) => setTimeout(resolve, waitMs))
-
 			const uri = fileToUri(filePath)
+			if (server.pullDiagnostics) {
+				// Pull-model servers (e.g. TypeScript 7 native): fetch instead of
+				// waiting for a push notification that never comes.
+				try {
+					await pullDiagnostics(client, uri)
+				} catch {
+					// Best-effort: fall through and report whatever is cached.
+				}
+			} else {
+				// Push-model servers: give publishDiagnostics time to arrive.
+				await new Promise((resolve) => setTimeout(resolve, waitMs))
+			}
+
 			const entry = client.diagnostics.get(uri)
 			if (!entry || entry.diagnostics.length === 0) {
 				return { content: [{ type: "text", text: "No diagnostics found — file looks clean." }], details: null }
