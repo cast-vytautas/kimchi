@@ -124,12 +124,56 @@ describe("lsp file sync failure handling", () => {
 		expect(consoleSpy).toHaveBeenCalledTimes(1)
 		const logged = consoleSpy.mock.calls[0][0]
 		expect(typeof logged).toBe("string")
-		expect(logged.startsWith("LSP file sync failed: ")).toBe(true)
+		expect(logged.startsWith("LSP: typescript-language-server failed to start: ")).toBe(true)
 		expect(logged.includes(INIT_FAILURE)).toBe(true)
 		expect(logged.includes("\n")).toBe(false)
 		// The status bar reflects the degraded server.
 		const setStatus = sessionCtx.ui.setStatus as ReturnType<typeof vi.fn>
 		expect(setStatus.mock.lastCall).toEqual(["lsp", "LSP: typescript-language-server failed to start"])
+	})
+
+	it("logs at most one line per server even when failures recur on different roots (monorepo)", async () => {
+		const { dir, ext, consoleSpy } = makeSession()
+		const sessionCtx = createContext({ cwd: dir })
+		await ext.getHandler<unknown, unknown>("session_start")(null, sessionCtx)
+		// Each package in a monorepo resolves to its own root.
+		mocks.findRoot.mockImplementation((file: string) =>
+			file.endsWith("/a/foo.ts") ? `${dir}/packages/a` : `${dir}/packages/b`,
+		)
+
+		const toolResult = ext.getHandler<unknown, unknown>("tool_result")
+		await toolResult(editToolResult("packages/a/foo.ts"), createContext({ cwd: dir }))
+		await toolResult(editToolResult("packages/b/foo.ts"), createContext({ cwd: dir }))
+		// A repeat of the first root is suppressed without another spawn attempt.
+		await toolResult(editToolResult("packages/a/foo.ts"), createContext({ cwd: dir }))
+
+		// One spawn attempt per distinct root (different roots are genuinely
+		// different server processes), but only one console line for the whole
+		// session — the issue's "one human-readable line per session".
+		expect(mocks.getOrCreateClient).toHaveBeenCalledTimes(2)
+		expect(consoleSpy).toHaveBeenCalledTimes(1)
+		const logged = consoleSpy.mock.calls[0][0]
+		expect(logged.startsWith("LSP: typescript-language-server failed to start: ")).toBe(true)
+	})
+
+	it("keeps the 'LSP file sync failed' label for mid-session sync failures", async () => {
+		const { dir, ext, consoleSpy } = makeSession()
+		mocks.getOrCreateClient.mockResolvedValue({ diagnostics: new Map() } as never)
+		mocks.refreshFile.mockRejectedValue(new Error("sync boom"))
+		const sessionCtx = createContext({ cwd: dir })
+		await ext.getHandler<unknown, unknown>("session_start")(null, sessionCtx)
+
+		const toolResult = ext.getHandler<unknown, unknown>("tool_result")
+		await toolResult(editToolResult("foo.ts"), createContext({ cwd: dir }))
+		await toolResult(editToolResult("bar.ts"), createContext({ cwd: dir }))
+
+		expect(consoleSpy).toHaveBeenCalledTimes(1)
+		const logged = consoleSpy.mock.calls[0][0]
+		expect(logged.startsWith("LSP file sync failed: ")).toBe(true)
+		expect(logged).toContain("sync boom")
+		// The status bar reports a mid-session failure, not a start failure.
+		const setStatus = sessionCtx.ui.setStatus as ReturnType<typeof vi.fn>
+		expect(setStatus.mock.lastCall).toEqual(["lsp", "LSP: typescript-language-server failed"])
 	})
 
 	it("records an eager session_start failure and skips respawning on later file ops", async () => {

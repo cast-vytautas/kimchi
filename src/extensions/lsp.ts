@@ -104,6 +104,11 @@ export default function (pi: ExtensionAPI) {
 	// fixed between sessions (e.g. by running the package installer), so a new
 	// session retries.
 	let failedClients = new Map<string, FailurePhase>()
+	// The console line is reported once per server per session even when the
+	// failure recurs on different roots (monorepo packages) — the issue's "one
+	// human-readable line per session" — while per-root suppression above
+	// still prevents pointless re-spawns of each distinct root.
+	let reportedFailures = new Set<string>()
 
 	function clientKey(server: ServerConfig, root: string): string {
 		return `${server.command}:${root}`
@@ -137,10 +142,11 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	/** Record a failure once per server+root per session: reflect it in the
-	 *  status bar and log a single one-line message (logging the Error object
-	 *  itself would dump Bun's bundled-source code frame into the TUI). Every
-	 *  failing path — file sync and the lsp_* tool starts — records through
-	 *  here so tool-side failures get the same status visibility. */
+	 *  status bar and log a single one-line message per server (logging the
+	 *  Error object itself would dump Bun's bundled-source code frame into
+	 *  the TUI). Every failing path — file sync and the lsp_* tool starts —
+	 *  records through here so tool-side failures get the same status
+	 *  visibility. */
 	function noteClientFailure(
 		server: ServerConfig,
 		root: string,
@@ -159,7 +165,12 @@ export default function (pi: ExtensionAPI) {
 					: `LSP: ${server.name} ${failureLabel(phase)}`,
 			)
 		}
-		console.error(`LSP file sync failed: ${err instanceof Error ? err.message : String(err)}`)
+		if (reportedFailures.has(server.name)) return
+		reportedFailures.add(server.name)
+		const msg = err instanceof Error ? err.message : String(err)
+		// Say whether the server never started (spawn/initialize failure, e.g.
+		// from an lsp_* tool) or broke mid-session while syncing a file.
+		console.error(phase === "sync" ? `LSP file sync failed: ${msg}` : `LSP: ${server.name} failed to start: ${msg}`)
 	}
 
 	/** Like getOrCreateClient, but skips server+root pairs that already failed
@@ -199,6 +210,7 @@ export default function (pi: ExtensionAPI) {
 		warned = false
 		degradedServers = []
 		failedClients = new Map()
+		reportedFailures = new Set()
 		activeServers = detectServers(cwd)
 
 		// Compute missing candidates independently of active servers. In a mixed
@@ -244,6 +256,7 @@ export default function (pi: ExtensionAPI) {
 		warned = false
 		degradedServers = []
 		failedClients = new Map()
+		reportedFailures = new Set()
 		shutdownAll()
 	})
 
@@ -275,9 +288,14 @@ export default function (pi: ExtensionAPI) {
 		const resolved = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath)
 		const server = serverForFile(resolved, activeServers)
 		if (!server) return
-		// Skip servers that already failed to start this session — re-spawning
-		// once per file op floods the output with the same error.
-		if (hasClientFailed(server, cwd)) return
+		// Resolve the project root the same way the lsp_* tools do (a nested
+		// package in a monorepo is its own root), so the failure cache and the
+		// spawned client are keyed by the same root whichever path sees the
+		// file first.
+		const root = findRoot(resolved, server.name, cwd)
+		// Skip servers that already failed on this root this session —
+		// re-spawning once per file op floods the output with the same error.
+		if (hasClientFailed(server, root)) return
 
 		const effectiveUi = ui ?? ctx.ui
 
@@ -298,7 +316,7 @@ export default function (pi: ExtensionAPI) {
 		// (sendMessage below) rides in the same best-effort sync bucket.
 		let phase: FailurePhase = "start"
 		try {
-			const client = await getOrCreateClient(server, cwd)
+			const client = await getOrCreateClient(server, root)
 			phase = "sync"
 			if (isReadToolResult(event)) {
 				// File was only read, not modified — just ensure LSP has it open
@@ -352,7 +370,7 @@ export default function (pi: ExtensionAPI) {
 			// Non-fatal: LSP sync failure doesn't break the agent. Record the
 			// failure so subsequent file ops skip the dead server, and log one
 			// message (logging the Error object dumps Bun's source code frame).
-			noteClientFailure(server, cwd, err, phase, effectiveUi)
+			noteClientFailure(server, root, err, phase, effectiveUi)
 		} finally {
 			if (pendingRefresh?.abort === refreshController) {
 				pendingRefresh = undefined
