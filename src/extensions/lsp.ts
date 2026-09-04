@@ -45,6 +45,12 @@ export function clientCwd(filePath: string, sessionCwd: string): string {
 const LSP_DIAGNOSTICS_CUSTOM_TYPE = "lsp_diagnostics"
 const DIAG_WAIT_TIMEOUT_MS = 2000
 
+/** Why a server+root is disabled for the session: the server never started
+ *  ("start") or it started and then broke mid-session ("sync"). The status
+ *  bar reports each accurately instead of calling everything a start
+ *  failure. */
+type FailurePhase = "start" | "sync"
+
 /** All five LSP tool names. Hidden at session start when detection finds no
  *  language server for the session cwd. */
 export const LSP_TOOL_NAMES = [
@@ -87,15 +93,16 @@ export default function (pi: ExtensionAPI) {
 	// the wait, but we never abort ctx.signal ourselves.
 	let pendingRefresh: { abort: AbortController } | undefined
 
-	// Servers that failed to start (e.g. typescript-language-server with no
-	// resolvable tsserver.js — common in fresh worktrees without node_modules)
-	// are remembered for the rest of the session and never re-spawned: without
+	// Servers that failed (e.g. typescript-language-server with no resolvable
+	// tsserver.js — common in fresh worktrees without node_modules) are
+	// remembered for the rest of the session and never re-spawned: without
 	// environment changes (installing workspace deps) every attempt fails the
 	// same way, and re-spawning on each file op re-prints the same error each
-	// time. Reset on session_start — the failure is often fixed between
-	// sessions (e.g. by running the package installer), so a new session
-	// retries.
-	let failedClients = new Set<string>()
+	// time. A mid-session crash is cached the same way because a dead server
+	// keeps failing identically. Reset on session_start — the failure is often
+	// fixed between sessions (e.g. by running the package installer), so a new
+	// session retries.
+	let failedClients = new Map<string, FailurePhase>()
 
 	function clientKey(server: ServerConfig, root: string): string {
 		return `${server.command}:${root}`
@@ -105,19 +112,52 @@ export default function (pi: ExtensionAPI) {
 		return failedClients.has(clientKey(server, root))
 	}
 
-	/** Record a start failure once per server+root per session: reflect it in
-	 *  the status bar and log a single one-line message. Logging the Error
-	 *  object itself would dump Bun's bundled-source code frame into the TUI. */
+	/** Phase of the recorded failure for this server on any root, if any. */
+	function failedPhaseFor(server: ServerConfig): FailurePhase | undefined {
+		for (const [key, phase] of failedClients) {
+			if (key.startsWith(`${server.command}:`)) return phase
+		}
+		return undefined
+	}
+
+	function failureLabel(phase: FailurePhase): string {
+		return phase === "start" ? "failed to start" : "failed"
+	}
+
+	/** Status line combining healthy and failed servers, so a later successful
+	 *  sync of one server doesn't erase another server's failure indicator in
+	 *  mixed repos (e.g. gopls healthy while typescript failed to start). */
+	function statusText(diagSuffix = ""): string {
+		const parts = activeServers.map((s) => {
+			const phase = failedPhaseFor(s)
+			return phase ? `${s.name} ${failureLabel(phase)}` : s.name
+		})
+		return `LSP: ${parts.join(", ")}${diagSuffix}`
+	}
+
+	/** Record a failure once per server+root per session: reflect it in the
+	 *  status bar and log a single one-line message (logging the Error object
+	 *  itself would dump Bun's bundled-source code frame into the TUI). Every
+	 *  failing path — file sync and the lsp_* tool starts — records through
+	 *  here so tool-side failures get the same status visibility. */
 	function noteClientFailure(
 		server: ServerConfig,
 		root: string,
 		err: unknown,
+		phase: FailurePhase,
 		statusUi: ExtensionUIContext | undefined,
 	): void {
 		const key = clientKey(server, root)
 		if (failedClients.has(key)) return
-		failedClients.add(key)
-		statusUi?.setStatus("lsp", `LSP: ${server.name} failed to start`)
+		failedClients.set(key, phase)
+		if (statusUi) {
+			statusUi.setStatus(
+				"lsp",
+				activeServers.some((s) => s.command === server.command)
+					? statusText()
+					: `LSP: ${server.name} ${failureLabel(phase)}`,
+			)
+		}
 		console.error(`LSP file sync failed: ${err instanceof Error ? err.message : String(err)}`)
 	}
 
@@ -125,15 +165,16 @@ export default function (pi: ExtensionAPI) {
 	 *  this session instead of re-spawning a doomed server. Throws a
 	 *  human-readable error so tool handlers surface something actionable. */
 	async function startClient(server: ServerConfig, root: string): Promise<LspClient> {
-		if (hasClientFailed(server, root)) {
+		const phase = failedClients.get(clientKey(server, root))
+		if (phase) {
 			throw new Error(
-				`LSP server ${server.name} failed to start for this session (see LSP status). Fix the underlying issue and start a new session to retry.`,
+				`LSP server ${server.name} ${failureLabel(phase)} for this session (see LSP status). Fix the underlying issue and start a new session to retry.`,
 			)
 		}
 		try {
 			return await getOrCreateClient(server, root)
 		} catch (err) {
-			failedClients.add(clientKey(server, root))
+			noteClientFailure(server, root, err, "start", ui)
 			throw err
 		}
 	}
@@ -156,7 +197,7 @@ export default function (pi: ExtensionAPI) {
 		ui = ctx.hasUI ? ctx.ui : undefined
 		warned = false
 		degradedServers = []
-		failedClients = new Set()
+		failedClients = new Map()
 		activeServers = detectServers(cwd)
 
 		// Compute missing candidates independently of active servers. In a mixed
@@ -189,7 +230,7 @@ export default function (pi: ExtensionAPI) {
 		for (const server of activeServers) {
 			const markers = server.name === "gopls" ? goMarkers : tsMarkers
 			if (!markers.some((m) => fs.existsSync(path.join(cwd, m)))) continue
-			getOrCreateClient(server, cwd).catch((err) => noteClientFailure(server, cwd, err, ui))
+			getOrCreateClient(server, cwd).catch((err) => noteClientFailure(server, cwd, err, "start", ui))
 		}
 	})
 
@@ -201,7 +242,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		warned = false
 		degradedServers = []
-		failedClients = new Set()
+		failedClients = new Map()
 		shutdownAll()
 	})
 
@@ -249,8 +290,15 @@ export default function (pi: ExtensionAPI) {
 			? AbortSignal.any([ctx.signal, refreshController.signal])
 			: refreshController.signal
 
+		// Distinguish why the sync failed: a server that never started
+		// ("start") vs one that started and then broke while syncing
+		// ("sync") — the status bar says which instead of calling every
+		// failure a start failure. Diagnostics delivery to the agent
+		// (sendMessage below) rides in the same best-effort sync bucket.
+		let phase: FailurePhase = "start"
 		try {
 			const client = await getOrCreateClient(server, cwd)
+			phase = "sync"
 			if (isReadToolResult(event)) {
 				// File was only read, not modified — just ensure LSP has it open
 				await ensureFileOpen(client, resolved)
@@ -281,16 +329,17 @@ export default function (pi: ExtensionAPI) {
 				// Update status bar with total diagnostic count across open files
 				if (effectiveUi) {
 					const totalDiags = [...client.diagnostics.values()].reduce((sum, entry) => sum + entry.diagnostics.length, 0)
-					const names = activeServers.map((s) => s.name).join(", ")
+					// Keep failure indicators for servers that failed this session —
+					// this server's successful sync must not erase them.
 					const diagPart = totalDiags > 0 ? ` (${totalDiags} diag${totalDiags === 1 ? "" : "s"})` : ""
-					effectiveUi.setStatus("lsp", `LSP: ${names}${diagPart}`)
+					effectiveUi.setStatus("lsp", statusText(diagPart))
 				}
 			}
 		} catch (err) {
 			// Non-fatal: LSP sync failure doesn't break the agent. Record the
 			// failure so subsequent file ops skip the dead server, and log one
 			// message (logging the Error object dumps Bun's source code frame).
-			noteClientFailure(server, cwd, err, effectiveUi)
+			noteClientFailure(server, cwd, err, phase, effectiveUi)
 		} finally {
 			if (pendingRefresh?.abort === refreshController) {
 				pendingRefresh = undefined
