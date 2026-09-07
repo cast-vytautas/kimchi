@@ -41,6 +41,7 @@ const mocks = vi.hoisted(() => {
 vi.mock("./client.js", () => ({
 	getOrCreateClient: mocks.getOrCreateClient,
 	ensureFileOpen: mocks.ensureFileOpen,
+	pullDiagnostics: vi.fn(async () => []),
 	refreshFile: mocks.refreshFile,
 	waitForDiagnostics: mocks.waitForDiagnostics,
 	sendRequest: vi.fn(),
