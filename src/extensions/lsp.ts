@@ -23,7 +23,15 @@ import {
 } from "./lsp/client.js"
 import { applyWorkspaceEdit } from "./lsp/edits.js"
 import { detectMissingCandidates, detectServers, findRoot, serverForFile } from "./lsp/servers.js"
-import type { Hover, Location, LocationLink, TextDocumentEdit, WorkspaceEdit } from "./lsp/types.js"
+import type {
+	Hover,
+	Location,
+	LocationLink,
+	LspClient,
+	ServerConfig,
+	TextDocumentEdit,
+	WorkspaceEdit,
+} from "./lsp/types.js"
 import { fileToUri, formatDiagnostic, uriToFile } from "./lsp/utils.js"
 import { createSystemPromptBlocks } from "./prompt-construction/index.js"
 import { createToolVisibility } from "./prompt-construction/tool-visibility.js"
@@ -79,6 +87,57 @@ export default function (pi: ExtensionAPI) {
 	// the wait, but we never abort ctx.signal ourselves.
 	let pendingRefresh: { abort: AbortController } | undefined
 
+	// Servers that failed to start (e.g. typescript-language-server with no
+	// resolvable tsserver.js — common in fresh worktrees without node_modules)
+	// are remembered for the rest of the session and never re-spawned: without
+	// environment changes (installing workspace deps) every attempt fails the
+	// same way, and re-spawning on each file op re-prints the same error each
+	// time. Reset on session_start — the failure is often fixed between
+	// sessions (e.g. by running the package installer), so a new session
+	// retries.
+	let failedClients = new Set<string>()
+
+	function clientKey(server: ServerConfig, root: string): string {
+		return `${server.command}:${root}`
+	}
+
+	function hasClientFailed(server: ServerConfig, root: string): boolean {
+		return failedClients.has(clientKey(server, root))
+	}
+
+	/** Record a start failure once per server+root per session: reflect it in
+	 *  the status bar and log a single one-line message. Logging the Error
+	 *  object itself would dump Bun's bundled-source code frame into the TUI. */
+	function noteClientFailure(
+		server: ServerConfig,
+		root: string,
+		err: unknown,
+		statusUi: ExtensionUIContext | undefined,
+	): void {
+		const key = clientKey(server, root)
+		if (failedClients.has(key)) return
+		failedClients.add(key)
+		statusUi?.setStatus("lsp", `LSP: ${server.name} failed to start`)
+		console.error(`LSP file sync failed: ${err instanceof Error ? err.message : String(err)}`)
+	}
+
+	/** Like getOrCreateClient, but skips server+root pairs that already failed
+	 *  this session instead of re-spawning a doomed server. Throws a
+	 *  human-readable error so tool handlers surface something actionable. */
+	async function startClient(server: ServerConfig, root: string): Promise<LspClient> {
+		if (hasClientFailed(server, root)) {
+			throw new Error(
+				`LSP server ${server.name} failed to start for this session (see LSP status). Fix the underlying issue and start a new session to retry.`,
+			)
+		}
+		try {
+			return await getOrCreateClient(server, root)
+		} catch (err) {
+			failedClients.add(clientKey(server, root))
+			throw err
+		}
+	}
+
 	function cancelPendingRefresh(): void {
 		if (!pendingRefresh) return
 		pendingRefresh.abort.abort()
@@ -97,6 +156,7 @@ export default function (pi: ExtensionAPI) {
 		ui = ctx.hasUI ? ctx.ui : undefined
 		warned = false
 		degradedServers = []
+		failedClients = new Set()
 		activeServers = detectServers(cwd)
 
 		// Compute missing candidates independently of active servers. In a mixed
@@ -129,7 +189,7 @@ export default function (pi: ExtensionAPI) {
 		for (const server of activeServers) {
 			const markers = server.name === "gopls" ? goMarkers : tsMarkers
 			if (!markers.some((m) => fs.existsSync(path.join(cwd, m)))) continue
-			getOrCreateClient(server, cwd).catch(() => {})
+			getOrCreateClient(server, cwd).catch((err) => noteClientFailure(server, cwd, err, ui))
 		}
 	})
 
@@ -141,6 +201,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		warned = false
 		degradedServers = []
+		failedClients = new Set()
 		shutdownAll()
 	})
 
@@ -172,6 +233,9 @@ export default function (pi: ExtensionAPI) {
 		const resolved = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath)
 		const server = serverForFile(resolved, activeServers)
 		if (!server) return
+		// Skip servers that already failed to start this session — re-spawning
+		// once per file op floods the output with the same error.
+		if (hasClientFailed(server, cwd)) return
 
 		const effectiveUi = ui ?? ctx.ui
 
@@ -223,9 +287,10 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 		} catch (err) {
-			// Non-fatal: LSP sync failure doesn't break the agent, but log it so
-			// production debugging is possible.
-			console.error("LSP file sync failed:", err)
+			// Non-fatal: LSP sync failure doesn't break the agent. Record the
+			// failure so subsequent file ops skip the dead server, and log one
+			// message (logging the Error object dumps Bun's source code frame).
+			noteClientFailure(server, cwd, err, effectiveUi)
 		} finally {
 			if (pendingRefresh?.abort === refreshController) {
 				pendingRefresh = undefined
@@ -258,7 +323,7 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
-			const client = await getOrCreateClient(server, findRoot(filePath, server.name, cwd))
+			const client = await startClient(server, findRoot(filePath, server.name, cwd))
 			await refreshFile(client, filePath)
 
 			const waitMs = Math.min(params.wait_ms ?? 2000, 10000)
@@ -297,7 +362,7 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
-			const client = await getOrCreateClient(server, findRoot(filePath, server.name, cwd))
+			const client = await startClient(server, findRoot(filePath, server.name, cwd))
 			await ensureFileOpen(client, filePath)
 
 			const result = (await sendRequest(client, "textDocument/hover", {
@@ -341,7 +406,7 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
-			const client = await getOrCreateClient(server, findRoot(filePath, server.name, cwd))
+			const client = await startClient(server, findRoot(filePath, server.name, cwd))
 			await ensureFileOpen(client, filePath)
 
 			const lspMethod = `textDocument/${params.method ?? "definition"}`
@@ -388,7 +453,7 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
-			const client = await getOrCreateClient(server, findRoot(filePath, server.name, cwd))
+			const client = await startClient(server, findRoot(filePath, server.name, cwd))
 			await ensureFileOpen(client, filePath)
 
 			const result = (await sendRequest(client, "textDocument/references", {
@@ -432,7 +497,7 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
-			const client = await getOrCreateClient(server, findRoot(filePath, server.name, cwd))
+			const client = await startClient(server, findRoot(filePath, server.name, cwd))
 			await ensureFileOpen(client, filePath)
 
 			// Check if rename is valid at this position
