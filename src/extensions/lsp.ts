@@ -146,14 +146,22 @@ export default function (pi: ExtensionAPI) {
 	 *  Error object itself would dump Bun's bundled-source code frame into
 	 *  the TUI). Every failing path — file sync and the lsp_* tool starts —
 	 *  records through here so tool-side failures get the same status
-	 *  visibility. */
+	 *  visibility.
+	 *
+	 *  `sessionFailures` must be the map captured by the session that
+	 *  initiated the async work. A rejection that arrives after
+	 *  session_reset (e.g. a slow eager start from session N) finds the map
+	 *  replaced and is dropped — recording it into the new session's cache
+	 *  would wrongly suppress that server for the rest of the new session. */
 	function noteClientFailure(
 		server: ServerConfig,
 		root: string,
 		err: unknown,
 		phase: FailurePhase,
 		statusUi: ExtensionUIContext | undefined,
+		sessionFailures: Map<string, FailurePhase> = failedClients,
 	): void {
+		if (sessionFailures !== failedClients) return // stale cross-session rejection
 		const key = clientKey(server, root)
 		if (failedClients.has(key)) return
 		failedClients.set(key, phase)
@@ -237,13 +245,16 @@ export default function (pi: ExtensionAPI) {
 			return
 		}
 
-		// Eagerly start servers that have a project marker directly in sessionCwd
+		// Eagerly start servers that have a project marker directly in sessionCwd.
+		// Capture this session's failure map: a rejection that lands after the
+		// next session_start must be dropped, not recorded into the new session.
+		const sessionFailures = failedClients
 		const goMarkers = ["go.mod"]
 		const tsMarkers = ["tsconfig.json", "package.json"]
 		for (const server of activeServers) {
 			const markers = server.name === "gopls" ? goMarkers : tsMarkers
 			if (!markers.some((m) => fs.existsSync(path.join(cwd, m)))) continue
-			getOrCreateClient(server, cwd).catch((err) => noteClientFailure(server, cwd, err, "start", ui))
+			getOrCreateClient(server, cwd).catch((err) => noteClientFailure(server, cwd, err, "start", ui, sessionFailures))
 		}
 	})
 
