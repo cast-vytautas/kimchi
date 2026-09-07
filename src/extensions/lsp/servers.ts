@@ -6,14 +6,19 @@ import type { ServerConfig } from "./types.js"
 
 const TS_EXTENSIONS = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"]
 
+// The classic TypeScript server gets used from several detection branches —
+// reference it by identity instead of repeating the name string (and without
+// a non-null `as` on a SERVERS.find()).
+const TYPESCRIPT_LANGUAGE_SERVER: ServerConfig = {
+	name: "typescript-language-server",
+	command: "typescript-language-server",
+	args: ["--stdio"],
+	extensions: TS_EXTENSIONS,
+	installHint: "npm i -g typescript-language-server typescript",
+}
+
 const SERVERS: ServerConfig[] = [
-	{
-		name: "typescript-language-server",
-		command: "typescript-language-server",
-		args: ["--stdio"],
-		extensions: TS_EXTENSIONS,
-		installHint: "npm i -g typescript-language-server typescript",
-	},
+	TYPESCRIPT_LANGUAGE_SERVER,
 	{
 		name: "gopls",
 		command: "gopls",
@@ -66,7 +71,7 @@ function exists(cmd: string): boolean {
 export function detectServers(cwd: string): ServerConfig[] {
 	const servers: ServerConfig[] = []
 	for (const s of SERVERS) {
-		if (s.name === "typescript-language-server") {
+		if (s === TYPESCRIPT_LANGUAGE_SERVER) {
 			servers.push(...detectTsServers(cwd))
 			continue
 		}
@@ -88,8 +93,7 @@ function detectTsServers(cwd: string): ServerConfig[] {
 	if (!findMarkerUp(cwd, ROOT_MARKERS["typescript-language-server"])) return []
 	const nativePath = resolveTsNativeServerPath(cwd)
 	if (nativePath) return [tsNativeConfig(nativePath)]
-	const tls = SERVERS.find((s) => s.name === "typescript-language-server") as ServerConfig
-	return exists(tls.command) ? [tls] : []
+	return exists(TYPESCRIPT_LANGUAGE_SERVER.command) ? [TYPESCRIPT_LANGUAGE_SERVER] : []
 }
 
 /**
@@ -105,7 +109,7 @@ export function detectMissingCandidates(cwd: string): ServerConfig[] {
 	for (const s of SERVERS) {
 		const markers = ROOT_MARKERS[s.name] ?? []
 		if (!findMarkerUp(cwd, markers)) continue
-		if (s.name === "typescript-language-server") {
+		if (s === TYPESCRIPT_LANGUAGE_SERVER) {
 			// TypeScript is only "missing" when neither the classic server nor
 			// the TypeScript 7 native fallback could be activated.
 			if (detectTsServers(cwd).length === 0) missing.push(s)
