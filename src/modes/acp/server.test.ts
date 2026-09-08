@@ -807,26 +807,52 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 		})
 
-		// authenticate()/unstable_logout() mutate the shared credential store;
-		// writeApiKey/clearApiKey are mocked here, so store transitions are
-		// simulated via mockReturnValueOnce — the point under test is that
-		// auth_status re-reads the store on every call instead of caching.
-		it("reflects authenticate() and unstable_logout() on subsequent status calls", async () => {
-			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
-			// auth.json entry so unstable_logout()'s OAuth cleanup has a store to clear.
-			writeFileSync(
-				join(tempAgentDir, "auth.json"),
-				JSON.stringify({
-					"kimchi-dev": { type: "oauth", accessToken: "old-token", refreshToken: "old-refresh" },
-				}),
-			)
+		// Canonical OAuth credential shape ({ type, access, refresh, expires }) —
+		// the credential reader drops malformed entries, which would hide a
+		// broken logout behind a false unauthenticated result.
+		function oauthCredential() {
+			return { type: "oauth", access: "token", refresh: "refresh", expires: Date.now() + 3600_000 }
+		}
+
+		// Regression: the subscription OAuth login persists credentials to
+		// auth.json only (no config.json apiKey), so auth_status must consult
+		// both halves of the credential store.
+		it("reports authenticated when only auth.json holds OAuth credentials", async () => {
+			writeFileSync(join(tempAgentDir, "auth.json"), JSON.stringify({ "kimchi-dev": oauthCredential() }))
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
 			const testAgent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
 				agentDir: tempAgentDir,
 				sessionFactory: async () => asSession(fake),
 			})
 
-			// Before login: no key in the store.
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
+		})
+
+		// The OAuth half is fully real here: auth.json is seeded on disk and
+		// unstable_logout() actually deletes the entry — no simulation. Only
+		// the config half is mocked (writeApiKey/clearApiKey never touch disk),
+		// so its transitions are simulated via mockReturnValueOnce.
+		it("reflects unstable_logout() and authenticate() on subsequent status calls", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+			// OAuth credentials present, as after a subscription login.
+			writeFileSync(join(tempAgentDir, "auth.json"), JSON.stringify({ "kimchi-dev": oauthCredential() }))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
+
+			await testAgent.unstable_logout({})
+
+			// After logout: the auth.json entry is gone from the real store.
 			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
 			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
 				authenticated: false,
@@ -834,18 +860,10 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			await testAgent.authenticate({ methodId: "kimchi-agent" })
 
-			// After authenticate(): the store now holds the token.
+			// After authenticate(): the config half holds the token.
 			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig("castai_v1_test-token"))
 			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
 				authenticated: true,
-			})
-
-			await testAgent.unstable_logout({})
-
-			// After logout: the key is gone again.
-			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
-			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
-				authenticated: false,
 			})
 		})
 	})
