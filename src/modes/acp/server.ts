@@ -976,8 +976,8 @@ export class KimchiAcpAgent implements Agent {
 					// (session/new's presence gate passed it). Blame the provider,
 					// not a specific key: the failed call may have come from either
 					// half of the credential store (config apiKey / auth.json OAuth).
-					if (isAuthClassTerminalError(terminal.errorMessage)) {
-						markCredentialStale(undefined, entry.session.model?.provider ?? "kimchi-dev")
+					if (isAuthRejectedMessage(terminal.errorMessage)) {
+						markCredentialStale(undefined, entry.session.model?.provider ?? KIMCHI_PROVIDER_ID)
 					}
 					this.failTurn(entry, toTurnTerminalError(terminal))
 				} else {

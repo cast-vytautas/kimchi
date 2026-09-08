@@ -205,6 +205,11 @@ class FakeAgentSession {
 			this.modelRegistry.getAvailable().find((m) => m.provider === provider && m.id === id),
 		hasConfiguredAuth: (_model: { provider: string }) => this.authConfigured,
 	}
+	// Provider-keyed seam used where only the provider id is known (multi-model
+	// orchestrator authRequired check) — mirrors modelRegistry.hasConfiguredAuth.
+	modelRuntime = {
+		hasConfiguredAuth: (_providerId: string) => this.authConfigured,
+	}
 	promptImpl: (text: string, opts?: PromptOpts) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
 	bindExtensionsImpl: (_bindings: unknown) => Promise<void> = async () => {}
@@ -4341,6 +4346,29 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		return { type: "message_end", message }
 	}
 
+	// pi tags user-initiated aborts with stopReason "aborted" — these must
+	// never be converted to turn errors.
+	function assistantAbortedEvent(): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "aborted",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
 	// The stale-credential hole (follow-up to #367): hasConfiguredAuth is a
 	// presence check — a present-but-dead key passes the session/new gate and
 	// only fails when the first request hits the provider. The 401 must reach
@@ -4473,26 +4501,7 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
-			fake.emit({
-				type: "message_end",
-				message: {
-					role: "assistant",
-					content: [],
-					api: "anthropic-messages",
-					provider: "anthropic",
-					model: "claude",
-					usage: {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-						totalTokens: 0,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-					},
-					stopReason: "aborted",
-					timestamp: 0,
-				} as AssistantMessage,
-			})
+			fake.emit(assistantAbortedEvent())
 			fake.emit(agentEnd())
 		}
 
