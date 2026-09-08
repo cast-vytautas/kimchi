@@ -7,6 +7,7 @@
 
 import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
+import { isCredentialStale } from "../../../credential-staleness.js"
 import { KIMCHI_PROVIDER_ID } from "../../../extensions/login/flow.js"
 
 export type AuthStatusResponse = {
@@ -50,10 +51,20 @@ export type AuthStatusPaths = {
  * unstable_logout() removes exactly it, so it defines "logged in".
  */
 export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStatusResponse> {
-	if (loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey) {
-		return { authenticated: true }
+	const apiKey = loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey
+	// Presence AND validity: a key the provider already rejected (401 at
+	// refresh / turn time — recorded in the staleness registry by this
+	// process) must not flip clients' "logged in" surfaces on. The whole
+	// point of the registry: stale-key-on-disk reads logged-out here, even
+	// though the file system says the key exists.
+	if (apiKey) {
+		return { authenticated: !isCredentialStale(apiKey, KIMCHI_PROVIDER_ID) }
 	}
-
+	// OAuth half (auth.json): no specific key to attribute a 401 to — only
+	// the provider-level mark applies.
+	if (isCredentialStale(undefined, KIMCHI_PROVIDER_ID)) {
+		return { authenticated: false }
+	}
 	const modelRuntime = await ModelRuntime.create({
 		authPath: paths.authPath,
 		modelsPath: paths.modelsPath,

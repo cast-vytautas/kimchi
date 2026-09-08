@@ -44,7 +44,7 @@ import {
 	type SetSessionModelResponse,
 	type ToolCallContent,
 } from "@agentclientprotocol/sdk"
-import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai"
+import type { Api, AssistantMessage, ImageContent, Model } from "@earendil-works/pi-ai"
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
@@ -62,6 +62,7 @@ import {
 import { getParsedCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
+import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
 import { KIMCHI_PROVIDER_ID } from "../../extensions/login/flow.js"
 import { convertAcpMcpServers } from "../../extensions/mcp-adapter/acp-mcp-convert.js"
 import { removePendingEntry, setCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
@@ -218,6 +219,18 @@ type TurnContext = {
 	hiddenToolCallIds: Set<string>
 	announcedToolCallIds: Set<string>
 	lastStreamedContent: Map<string, string>
+	/**
+	 * Latest assistant message_end's terminal-error state. pi-mono terminates
+	 * a turn whose LLM call failed (stale credential, outage, quota) with an
+	 * assistant message carrying stopReason "error" + errorMessage — and
+	 * resolves session.prompt() NORMALLY, so without this the turn would
+	 * surface as a happy silent end_turn with zero tokens. Set on an error
+	 * message_end and cleared on a subsequent successful one (pi's internal
+	 * retry recovered). Read at finalization to failTurn instead: auth-class
+	 * errors convert to authRequired (-32000) so reactive login panes
+	 * trigger, everything else to a visible error.
+	 */
+	lastAssistantError?: { stopReason: "error"; errorMessage?: string }
 	/**
 	 * Pre-write file contents read at tool_execution_start for `write` tool
 	 * calls: the original file content if the file existed (later surfaced as
@@ -503,6 +516,10 @@ export class KimchiAcpAgent implements Agent {
 		// Persist the key so new sessions pick it up via the login extension's
 		// session_start handler (which reads loadConfig().apiKey).
 		writeApiKey(token)
+		// A successful login invalidates every prior 401 signal: clear
+		// staleness so auth_status flips back to authenticated immediately,
+		// without waiting for the next model refresh cycle.
+		clearCredentialStale(KIMCHI_PROVIDER_ID)
 
 		// Eagerly refresh the model cache so the subsequent newSession() call
 		// finds available models without another round-trip.
@@ -536,6 +553,10 @@ export class KimchiAcpAgent implements Agent {
 			setCallerMcpServers(session.sessionId, convertAcpMcpServers(params.mcpServers ?? []))
 			const initialMode = this.getInitialPermissionMode(session)
 			assertSessionHasModel(session)
+			// Credential gate (work item #367): a keyless machine must reject
+			// here, not only at first prompt — this is the earliest reactive
+			// login trigger clients consume.
+			assertSessionModelHasAuth(session)
 
 			const sessionId = session.sessionId
 			const uiContext = this.createUiContext(session)
@@ -683,6 +704,20 @@ export class KimchiAcpAgent implements Agent {
 		if (value === "multi-model") {
 			const { model: orchestrator, modelRef: orchRef } = getOrchestratorModel(session.sessionId, modelRegistry)
 			if (!orchestrator) {
+				// An unresolvable orchestrator has two distinct causes: the ref is
+				// genuinely unknown (invalidParams) or the provider has no
+				// credentials (authRequired — e.g. a keyless machine where
+				// models.json was never fetched). The latter must surface as -32000
+				// so clients open their login UI instead of a generic error bubble.
+				// Pi's hasConfiguredAuth reads only model.provider, so the minimal
+				// shape cast here is safe.
+				const parsed = splitModelRef(orchRef)
+				if (parsed && !modelRegistry.hasConfiguredAuth({ provider: parsed.provider } as Model<Api>)) {
+					throw RequestError.authRequired(
+						undefined,
+						`multi-model orchestrator (${orchRef}) is not available: auth required. Call session/authenticate to log in, then retry.`,
+					)
+				}
 				throw RequestError.invalidParams(undefined, `multi-model orchestrator (${orchRef}) is not available`)
 			}
 			const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
@@ -931,7 +966,21 @@ export class KimchiAcpAgent implements Agent {
 				// "Agent is already processing" throw because session.prompt is still
 				// running the chained continues. session.prompt() resolves only after
 				// ALL chained calls complete.
-				if (entry.turn) {
+				if (!entry.turn) return
+				// A turn that resolved after a terminal assistant error
+				// (stopReason "error" with no successful retry) must NOT report
+				// happy end_turn — the client would show a silent empty reply.
+				if (entry.turn.lastAssistantError && !entry.turn.cancelled) {
+					const terminal = entry.turn.lastAssistantError
+					// Turn-time 401 = first live proof this on-disk key is dead
+					// (session/new's presence gate passed it). Blame the provider,
+					// not a specific key: the failed call may have come from either
+					// half of the credential store (config apiKey / auth.json OAuth).
+					if (isAuthClassTerminalError(terminal.errorMessage)) {
+						markCredentialStale(undefined, entry.session.model?.provider ?? "kimchi-dev")
+					}
+					this.failTurn(entry, toTurnTerminalError(terminal))
+				} else {
 					this.finalizeTurn(entry, entry.turn.cancelled ? "cancelled" : "end_turn")
 				}
 			},
@@ -946,7 +995,7 @@ export class KimchiAcpAgent implements Agent {
 				if (entry.turn.cancelled) {
 					this.finalizeTurn(entry, "cancelled")
 				} else {
-					this.failTurn(entry, err)
+					this.failTurn(entry, this.toAuthRequiredIfUnauthenticated(entry.session, err))
 				}
 			},
 		)
@@ -1181,6 +1230,15 @@ export class KimchiAcpAgent implements Agent {
 				if (!turn) return
 				const msg = event.message
 				if (msg.role !== "assistant") return
+				// Terminal-error tracking for the finalize path: only the LAST
+				// assistant message's stopReason decides the turn outcome — a
+				// failed attempt pi auto-retries is superseded by the retry's
+				// successful message_end, which must clear the flag.
+				if (msg.stopReason === "error") {
+					turn.lastAssistantError = { stopReason: "error", errorMessage: msg.errorMessage }
+				} else if (msg.stopReason !== "aborted") {
+					turn.lastAssistantError = undefined
+				}
 				// Emit whatever text a block carries that streaming never sent —
 				// an extension can zero text_delta while streaming and restore the
 				// text only in message_end's returned message (Ferment V2 does
@@ -1676,6 +1734,22 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
+	/**
+	 * Convert pi's plain "No API key" prompt rejection into ACP authRequired
+	 * (-32000) so clients route to their login UI instead of an opaque generic
+	 * error (-32603). Detection consults the registry's credential state rather
+	 * than the error message — messages are copy, not contract — so failures on
+	 * models whose provider HAS configured auth (network errors, rate limits,
+	 * provider outages) propagate unchanged.
+	 */
+	private toAuthRequiredIfUnauthenticated(session: AgentSession, err: unknown): unknown {
+		if (err instanceof RequestError) return err
+		const model = session.model
+		if (!model) return err
+		if (getSessionModelRegistry(session).hasConfiguredAuth(model)) return err
+		return modelAuthRequiredError(model)
+	}
+
 	private failTurn(entry: SessionRecord, err: unknown): void {
 		const turn = entry.turn
 		if (!turn) return
@@ -1775,6 +1849,13 @@ export function buildSessionModelState(configOptions: SessionConfigOption[]): Se
 	}
 }
 
+// Checks model PRESENCE only — pi resolves a non-null model object even on
+// keyless machines, and this check is shared by newSession and loadSession.
+// The credential gate for session-create lives in assertSessionModelHasAuth
+// (newSession-only); do NOT fold it in here: loadSession re-loads existing
+// on-disk sessions, and gating re-load on credentials would retroactively
+// break sessions after a logout — their first prompt still surfaces -32000
+// via toAuthRequiredIfUnauthenticated.
 export function assertSessionHasModel(session: Pick<AgentSession, "model">): void {
 	if (!session.model) {
 		throw RequestError.authRequired(
@@ -1782,6 +1863,68 @@ export function assertSessionHasModel(session: Pick<AgentSession, "model">): voi
 			"No model available for ACP session. Configure an API key or models.json first.",
 		)
 	}
+}
+
+/**
+ * Terminal turn failure (assistant message stopReason "error" surviving pi's
+ * internal retries): convert to a JSON-RPC error instead of a silent
+ * zero-token end_turn. Auth-class failures — a configured-but-dead
+ * credential (401 / unauthorized / invalid key) — convert to ACP
+ * authRequired (-32000) so reactive login panes (e.g. Kimchi Studio's,
+ * which narrows on code only) trigger; everything else surfaces as a
+ * generic error carrying the provider's message.
+ *
+ * Detection necessarily keys off the provider error TEXT here: pi exposes
+ * stopReason + errorMessage on AssistantMessage, not a structured status
+ * code, and by construction hasConfiguredAuth is true (the credential
+ * exists on disk — it's stale server-side), so the credential-state checks
+ * used elsewhere cannot distinguish this. Keep the pattern tight to
+ * auth-specific wording; false negatives degrade to the old -32603
+ * behaviour, false positives would summon a login pane that cannot help.
+ */
+// isAuthRejectedMessage from ../../credential-staleness.js is the single
+// source of truth for auth-class detection — staleness marking (turn-time,
+// refresh-time) and authRequired conversion must agree on the pattern.
+function isAuthClassTerminalError(errorMessage: string | undefined): boolean {
+	return isAuthRejectedMessage(errorMessage)
+}
+
+function toTurnTerminalError(terminal: { stopReason: "error"; errorMessage?: string }): Error {
+	const detail = terminal.errorMessage ?? "the provider returned an error"
+	if (isAuthClassTerminalError(terminal.errorMessage)) {
+		return RequestError.authRequired(
+			undefined,
+			`${detail}: auth required. Call session/authenticate to log in again, then retry.`,
+		)
+	}
+	return RequestError.internalError(undefined, detail)
+}
+
+function modelAuthRequiredError(model: Model<Api>): RequestError {
+	// Pi substitutes a placeholder model on keyless machines — naming it
+	// would just read as "model unknown/unknown" in client error surfaces.
+	const ref = refFromModel(model)
+	const detail =
+		ref === "unknown/unknown" ? "no credentials configured for the selected model" : `model ${ref} is not available`
+	return RequestError.authRequired(
+		undefined,
+		`${detail}: auth required. Call session/authenticate to log in, then retry.`,
+	)
+}
+
+// Keyless machines must surface here rather than at prompt time: pi resolves
+// a non-null model object without credentials, so assertSessionHasModel can't
+// detect missing auth. Rejecting at session-create gives clients the earliest
+// model-aware authRequired trigger — before any session exists — which is
+// what reactive login panes (e.g. Kimchi Studio's) consume. Called from
+// newSession only; loadSession, prompt, and model-set have their own paths.
+export function assertSessionModelHasAuth(
+	session: Pick<AgentSession, "model" | "modelRuntime"> & { modelRegistry?: ModelRegistry },
+): void {
+	const model = session.model
+	if (!model) return
+	if (getSessionModelRegistry(session).hasConfiguredAuth(model)) return
+	throw modelAuthRequiredError(model)
 }
 
 export function initializeHeadlessTheme(settingsManager: Pick<SettingsManager, "getTheme">): void {
