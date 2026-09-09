@@ -14,6 +14,15 @@ function isKimchiProvider(providerId: string): boolean {
 	)
 }
 
+/**
+ * Remove every Kimchi credential from auth.json (logout). Delegates to
+ * syncPiAuth's deletion mode; modelsPath is never read in that mode, so
+ * callers clearing credentials need no models.json path.
+ */
+export async function clearPiAuth(authPath: string): Promise<void> {
+	await syncPiAuth(authPath, "", "")
+}
+
 export async function syncPiAuth(authPath: string, modelsPath: string, apiKey: string): Promise<void> {
 	mkdirSync(dirname(authPath), { recursive: true, mode: 0o700 })
 	const release = await lock(authPath, { realpath: false, retries: 10 })

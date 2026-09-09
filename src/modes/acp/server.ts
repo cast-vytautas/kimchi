@@ -92,7 +92,7 @@ import type { PermissionMode, PermissionModeState } from "../../extensions/permi
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { updateModelsConfig } from "../../models.js"
-import { syncPiAuth } from "../../pi-auth.js"
+import { clearPiAuth } from "../../pi-auth.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
@@ -543,8 +543,8 @@ export class KimchiAcpAgent implements Agent {
 		// kimchi-dev/* sub-provider entries. AuthStorage.logout() only removes
 		// the exact provider id, leaving e.g. kimchi-dev/anthropic behind; the
 		// surviving entry would make a freshly started process look
-		// authenticated again. syncPiAuth matches the CLI logout path.
-		await syncPiAuth(join(this.agentDir, "auth.json"), join(this.agentDir, "models.json"), "")
+		// authenticated again. Matches the CLI logout path.
+		await clearPiAuth(join(this.agentDir, "auth.json"))
 
 		return {}
 	}
