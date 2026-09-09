@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type {
@@ -206,8 +206,13 @@ class FakeAgentSession {
 	}
 	// Provider-keyed seam used where only the provider id is known (multi-model
 	// orchestrator authRequired check) — mirrors modelRegistry.hasConfiguredAuth.
+	// refresh() stands in for pi's credential re-read: calling it flips the fake
+	// to configured, as a real runtime picks up a freshly-persisted auth.json.
 	modelRuntime = {
 		hasConfiguredAuth: (_providerId: string) => this.authConfigured,
+		refresh: async (_options?: { allowNetwork?: boolean }) => {
+			this.authConfigured = true
+		},
 	}
 	promptImpl: (text: string, opts?: PromptOpts) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
@@ -625,6 +630,14 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				rmSync(tempAgentDir, { recursive: true, force: true })
 			} catch {}
 			mkdirSync(tempAgentDir, { recursive: true })
+			// syncPiAuth (not mocked) requires an on-disk models.json; in production
+			// updateModelsConfig (mocked here) writes it.
+			writeFileSync(
+				join(tempAgentDir, "models.json"),
+				JSON.stringify({
+					providers: { "kimchi-dev": { baseUrl: "https://llm.kimchi.dev/openai/v1", models: [] } },
+				}),
+			)
 			vi.mocked(authenticateViaBrowser).mockReset()
 			vi.mocked(writeApiKey).mockReset()
 			vi.mocked(updateModelsConfig).mockReset()
@@ -688,6 +701,60 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				/Browser authentication failed/,
 			)
 			expect(writeApiKey).not.toHaveBeenCalled()
+		})
+
+		// The respawn workaround (Studio ADR-0042): authenticate() must leave this
+		// process usable, not just the next one.
+		it("syncs the token into auth.json so freshly created runtimes see it without a respawn", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await testAgent.authenticate({ methodId: "kimchi-agent" })
+
+			const auth = JSON.parse(readFileSync(join(tempAgentDir, "auth.json"), "utf-8")) as Record<
+				string,
+				{ type: string; key: string }
+			>
+			expect(auth["kimchi-dev"]).toEqual({ type: "api_key", key: "castai_v1_test-token" })
+		})
+
+		it("refreshes open sessions' credential snapshots so a re-login works without a respawn", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+			const openFake = new FakeAgentSession("session-auth-refresh")
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(openFake),
+			})
+			await testAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+			// Credentials disappeared server-side since session creation.
+			openFake.authConfigured = false
+			const refreshSpy = vi.spyOn(openFake.modelRuntime, "refresh")
+
+			await testAgent.authenticate({ methodId: "kimchi-agent" })
+
+			expect(refreshSpy).toHaveBeenCalledWith({ allowNetwork: false })
+			expect(openFake.authConfigured).toBe(true)
+		})
+
+		it("still succeeds when an open session's runtime refresh fails", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+			const openFake = new FakeAgentSession("session-auth-refresh-fail")
+			openFake.modelRuntime.refresh = () => Promise.reject(new Error("stale provider cache"))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(openFake),
+			})
+			await testAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			const result = await testAgent.authenticate({ methodId: "kimchi-agent" })
+
+			expect(result).toEqual({})
 		})
 	})
 
@@ -769,6 +836,14 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				rmSync(tempAgentDir, { recursive: true, force: true })
 			} catch {}
 			mkdirSync(tempAgentDir, { recursive: true })
+			// syncPiAuth (not mocked) requires an on-disk models.json; in production
+			// updateModelsConfig (mocked here) writes it.
+			writeFileSync(
+				join(tempAgentDir, "models.json"),
+				JSON.stringify({
+					providers: { "kimchi-dev": { baseUrl: "https://llm.kimchi.dev/openai/v1", models: [] } },
+				}),
+			)
 			vi.mocked(authenticateViaBrowser).mockReset()
 			vi.mocked(loadConfig).mockClear()
 			resetCredentialStalenessForTests()

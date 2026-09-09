@@ -92,6 +92,7 @@ import {
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { updateModelsConfig } from "../../models.js"
+import { syncPiAuth } from "../../pi-auth.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
@@ -516,6 +517,19 @@ export class KimchiAcpAgent implements Agent {
 		// Eagerly refresh the model cache so the subsequent newSession() call
 		// finds available models without another round-trip.
 		await updateModelsConfig(join(this.agentDir, "models.json"), token)
+
+		// Write Pi's credential store too, and refresh every OPEN session's
+		// ModelRuntime: hasConfiguredAuth reads a snapshot captured at session
+		// creation (model-runtime.js), so without this an already-open session
+		// keeps rejecting with -32000 until the process is respawned. A failing
+		// refresh must not fail the login — the credential is persisted and the
+		// next action re-reads it.
+		await syncPiAuth(join(this.agentDir, "auth.json"), join(this.agentDir, "models.json"), token)
+		await Promise.all(
+			[...this.sessions.values()].map((record) =>
+				record.session.modelRuntime.refresh({ allowNetwork: false }).catch(() => {}),
+			),
+		)
 
 		return {}
 	}
