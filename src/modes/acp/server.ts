@@ -92,7 +92,7 @@ import type { PermissionMode, PermissionModeState } from "../../extensions/permi
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { updateModelsConfig } from "../../models.js"
-import { syncPiAuth } from "../../pi-auth.js"
+import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
@@ -539,14 +539,9 @@ export class KimchiAcpAgent implements Agent {
 		// new sessions no longer pick it up via the login extension.
 		clearApiKey()
 
-		// Clear stored OAuth credentials (refresh tokens etc.) for the
-		// kimchi-dev provider from auth.json.
-		const modelRuntime = await ModelRuntime.create({
-			authPath: join(this.agentDir, "auth.json"),
-			modelsPath: join(this.agentDir, "models.json"),
-			refreshOnCreate: false,
-		})
-		await modelRuntime.logout(KIMCHI_PROVIDER_ID)
+		// clearPiAuth over AuthStorage.logout(): it removes kimchi-dev/*
+		// sub-provider entries, not just the exact kimchi-dev id.
+		await clearPiAuth(join(this.agentDir, "auth.json"))
 
 		return {}
 	}

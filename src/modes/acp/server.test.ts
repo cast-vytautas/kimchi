@@ -779,13 +779,14 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			} catch {}
 		})
 
-		it("clears API key from config and OAuth credentials from auth storage", async () => {
-			// Seed auth.json with a kimchi-dev OAuth entry so we can verify
-			// logout actually removes it.
+		// Regression: logout must remove kimchi-dev/* sub-provider entries, not just kimchi-dev.
+		it("clears API key from config and every Kimchi credential from auth storage", async () => {
 			writeFileSync(
 				join(tempAgentDir, "auth.json"),
 				JSON.stringify({
 					"kimchi-dev": { type: "oauth", accessToken: "old-token", refreshToken: "old-refresh" },
+					"kimchi-dev/anthropic": { type: "api_key", key: "old-api-key" },
+					anthropic: { type: "oauth", accessToken: "keep-token", refreshToken: "keep-refresh" },
 				}),
 			)
 
@@ -801,13 +802,17 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// clearApiKey is mocked — verify it was called to clear the config file.
 			expect(clearApiKey).toHaveBeenCalledOnce()
 
-			// AuthStorage.logout("kimchi-dev") should have removed the entry
-			// from auth.json. Read it back and verify.
 			const authJson = JSON.parse(
 				// eslint-disable-next-line no-restricted-syntax
 				await import("node:fs").then((fs) => fs.readFileSync(join(tempAgentDir, "auth.json"), "utf-8")),
 			)
 			expect(authJson["kimchi-dev"]).toBeUndefined()
+			expect(authJson["kimchi-dev/anthropic"]).toBeUndefined()
+			expect(authJson.anthropic).toEqual({
+				type: "oauth",
+				accessToken: "keep-token",
+				refreshToken: "keep-refresh",
+			})
 		})
 	})
 
