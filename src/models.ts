@@ -4,6 +4,7 @@ import type { AnthropicMessagesCompat, Model, OpenAICompletionsCompat, ThinkingL
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
 import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_NAME } from "./extensions/router/constants.js"
+import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
 import { getVersion } from "./utils.js"
 
 // Upstream catalog keyed by exact model id, used to inherit anthropic-messages
@@ -469,20 +470,16 @@ export async function updateModelsConfig(
 		// Refresh is an authenticated call: a 401 means the on-disk key is
 		// dead, not absent. Mark before the rethrow decision so the mark
 		// survives the cached-fallback path too.
-		// "kimchi-dev" literal: importing KIMCHI_PROVIDER_ID from login/flow.ts
-		// would cycle (flow.ts imports this module); this refresh is always
-		// the Kimchi catalog, so the provider id is fixed here.
 		if (isAuthRejectedMessage(message)) {
-			markCredentialStale(apiKey, "kimchi-dev")
+			markCredentialStale(apiKey, KIMCHI_PROVIDER_ID)
 		}
 		const cached = readCachedMetadata(modelsJsonPath) ?? []
 		if (options.allowCachedFallback === false || (cached.length === 0 && otherModels.length === 0)) throw err
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
 		return { models: sortModels([...cached, ...otherModels]) }
 	}
-	// Authenticated success clears marks from earlier 401s. Same "kimchi-dev"
-	// literal as above — the import would cycle.
-	clearCredentialStale("kimchi-dev")
+	// Authenticated success clears marks from earlier 401s.
+	clearCredentialStale(KIMCHI_PROVIDER_ID)
 
 	const activeModels = fetched.filter((m) => m.status !== "sunset" && m.limits.max_output_tokens > 0)
 	if (activeModels.length === 0 && fetched.length > 0) {

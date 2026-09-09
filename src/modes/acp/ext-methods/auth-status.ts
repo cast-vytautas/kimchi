@@ -8,7 +8,7 @@
 import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
 import { isCredentialStale } from "../../../credential-staleness.js"
-import { KIMCHI_PROVIDER_ID } from "../../../extensions/login/flow.js"
+import { KIMCHI_PROVIDER_ID } from "../../../kimchi-provider.js"
 
 export type AuthStatusResponse = {
 	authenticated: boolean

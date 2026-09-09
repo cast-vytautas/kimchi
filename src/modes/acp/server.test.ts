@@ -622,6 +622,17 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 	})
 
+	// syncPiAuth (not mocked) requires an on-disk models.json; in production
+	// updateModelsConfig (mocked here) writes it.
+	function seedModelsJson(agentDir: string): void {
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: { "kimchi-dev": { baseUrl: "https://llm.kimchi.dev/openai/v1", models: [] } },
+			}),
+		)
+	}
+
 	describe("authenticate", () => {
 		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir-auth"
 
@@ -630,14 +641,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				rmSync(tempAgentDir, { recursive: true, force: true })
 			} catch {}
 			mkdirSync(tempAgentDir, { recursive: true })
-			// syncPiAuth (not mocked) requires an on-disk models.json; in production
-			// updateModelsConfig (mocked here) writes it.
-			writeFileSync(
-				join(tempAgentDir, "models.json"),
-				JSON.stringify({
-					providers: { "kimchi-dev": { baseUrl: "https://llm.kimchi.dev/openai/v1", models: [] } },
-				}),
-			)
+			seedModelsJson(tempAgentDir)
 			vi.mocked(authenticateViaBrowser).mockReset()
 			vi.mocked(writeApiKey).mockReset()
 			vi.mocked(updateModelsConfig).mockReset()
@@ -836,14 +840,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				rmSync(tempAgentDir, { recursive: true, force: true })
 			} catch {}
 			mkdirSync(tempAgentDir, { recursive: true })
-			// syncPiAuth (not mocked) requires an on-disk models.json; in production
-			// updateModelsConfig (mocked here) writes it.
-			writeFileSync(
-				join(tempAgentDir, "models.json"),
-				JSON.stringify({
-					providers: { "kimchi-dev": { baseUrl: "https://llm.kimchi.dev/openai/v1", models: [] } },
-				}),
-			)
+			seedModelsJson(tempAgentDir)
 			vi.mocked(authenticateViaBrowser).mockReset()
 			vi.mocked(loadConfig).mockClear()
 			resetCredentialStalenessForTests()
