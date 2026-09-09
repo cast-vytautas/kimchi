@@ -469,6 +469,9 @@ export async function updateModelsConfig(
 		// Refresh is an authenticated call: a 401 means the on-disk key is
 		// dead, not absent. Mark before the rethrow decision so the mark
 		// survives the cached-fallback path too.
+		// "kimchi-dev" literal: importing KIMCHI_PROVIDER_ID from login/flow.ts
+		// would cycle (flow.ts imports this module); this refresh is always
+		// the Kimchi catalog, so the provider id is fixed here.
 		if (isAuthRejectedMessage(message)) {
 			markCredentialStale(apiKey, "kimchi-dev")
 		}
@@ -477,7 +480,8 @@ export async function updateModelsConfig(
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
 		return { models: sortModels([...cached, ...otherModels]) }
 	}
-	// Authenticated success clears marks from earlier 401s.
+	// Authenticated success clears marks from earlier 401s. Same "kimchi-dev"
+	// literal as above — the import would cycle.
 	clearCredentialStale("kimchi-dev")
 
 	const activeModels = fetched.filter((m) => m.status !== "sunset" && m.limits.max_output_tokens > 0)

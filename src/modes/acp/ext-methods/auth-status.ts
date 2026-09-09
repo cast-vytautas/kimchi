@@ -52,14 +52,13 @@ export type AuthStatusPaths = {
  */
 export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStatusResponse> {
 	const apiKey = loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey
-	// Present-but-rejected key reads logged-out (marks come from observed
-	// 401s — credential-staleness.ts), even though the key exists on disk.
-	if (apiKey) {
-		return { authenticated: !isCredentialStale(apiKey, KIMCHI_PROVIDER_ID) }
-	}
-	// auth.json half: no key to blame — provider-level mark only.
-	if (isCredentialStale(undefined, KIMCHI_PROVIDER_ID)) {
+	// A 401 mark (key-level or provider-level — credential-staleness.ts)
+	// means logged-out, even though the key exists on disk.
+	if (isCredentialStale(apiKey, KIMCHI_PROVIDER_ID)) {
 		return { authenticated: false }
+	}
+	if (apiKey) {
+		return { authenticated: true }
 	}
 	const modelRuntime = await ModelRuntime.create({
 		authPath: paths.authPath,

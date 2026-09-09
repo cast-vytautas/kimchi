@@ -966,7 +966,7 @@ export class KimchiAcpAgent implements Agent {
 					if (isAuthRejectedMessage(terminal.errorMessage)) {
 						markCredentialStale(undefined, entry.session.model?.provider ?? KIMCHI_PROVIDER_ID)
 					}
-					this.failTurn(entry, toTurnTerminalError(terminal))
+					this.failTurn(entry, toTurnError(terminal))
 				} else {
 					this.finalizeTurn(entry, entry.turn.cancelled ? "cancelled" : "end_turn")
 				}
@@ -1218,9 +1218,12 @@ export class KimchiAcpAgent implements Agent {
 				const msg = event.message
 				if (msg.role !== "assistant") return
 				// Terminal-error tracking for the finalize path: only the LAST
-				// assistant message's stopReason decides the turn outcome — a
-				// failed attempt pi auto-retries is superseded by the retry's
-				// successful message_end, which must clear the flag.
+				// assistant message's stopReason decides the turn outcome.
+				// StopReason (pi-ai): error → record; aborted → leave (finalization
+				// reads entry.turn.cancelled instead); anything else (stop, length,
+				// toolUse, deferred) → a completed message, clear. A failed attempt
+				// pi auto-retries is superseded by the retry's message_end, which
+				// lands here and clears the flag.
 				if (msg.stopReason === "error") {
 					turn.lastAssistantError = { stopReason: "error", errorMessage: msg.errorMessage }
 				} else if (msg.stopReason !== "aborted") {
@@ -1860,7 +1863,7 @@ export function assertSessionHasModel(session: Pick<AgentSession, "model">): voi
  * (credential-staleness.ts) — the key exists by construction (the presence
  * gate passed it), so only text separates dead from missing.
  */
-function toTurnTerminalError(terminal: { stopReason: "error"; errorMessage?: string }): Error {
+function toTurnError(terminal: { stopReason: "error"; errorMessage?: string }): Error {
 	const detail = terminal.errorMessage ?? "the provider returned an error"
 	if (isAuthRejectedMessage(terminal.errorMessage)) {
 		return RequestError.authRequired(
