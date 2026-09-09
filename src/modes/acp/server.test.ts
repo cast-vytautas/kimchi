@@ -187,8 +187,7 @@ class FakeAgentSession {
 		input: ["text"],
 		contextWindow: 200_000,
 	}
-	// Simulates the ModelRuntime credential state consulted by the authRequired
-	// (-32000) conversions. Tests set this to false to model a keyless machine.
+	// Credential state for the -32000 conversions; false = keyless machine.
 	authConfigured = true
 	modelRegistry = {
 		getAvailable: () =>
@@ -842,9 +841,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 		})
 
-		// Present-but-DEAD key: presence checks see the key, the registry
-		// says the provider rejected it. auth_status must report logged-out
-		// (Studio's global login screen consumes this on open).
+		// Present-but-dead key: presence sees it, registry says rejected →
+		// auth_status must read logged-out.
 		it("reports unauthenticated when the configured key was observed stale (401 at refresh)", async () => {
 			markCredentialStale("castai_v1_dead", "kimchi-dev")
 			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig("castai_v1_dead"))
@@ -859,8 +857,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 		})
 
-		// OAuth half only: no config apiKey, so there is no specific key to
-		// blame — the provider-level mark must flip status on its own.
+		// auth.json only: no key to blame — provider mark alone must flip status.
 		it("reports unauthenticated when only witnessed provider-level staleness exists (auth.json OAuth)", async () => {
 			markCredentialStale(undefined, "kimchi-dev")
 			writeFileSync(join(tempAgentDir, "auth.json"), JSON.stringify({ "kimchi-dev": oauthCredential() }))
@@ -912,9 +909,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 		})
 
-		// Reactive-login recovery: a stale on-disk key drove the UI into the
-		// login screen; the user re-logs-in via session/authenticate and the
-		// fresh token lands on this same connection. Marks must clear.
+		// Stale key → login screen → session/authenticate on this connection:
+		// marks must clear.
 		it("clears staleness marks after authenticate() succeeds on this connection", async () => {
 			const deadKey = "castai_v1_dead"
 			markCredentialStale(deadKey, "kimchi-dev")
@@ -4164,11 +4160,10 @@ describe("assertSessionHasModel", () => {
 	})
 })
 
-// Work item #367: no-auth failures on the ACP surface must surface as
-// authRequired (-32000) so clients route to their login UI, not generic
-// -32603 (prompt) or -32602 (multi-model model-set) errors. A keyless
-// machine is rejected at session/new; the prompt and model-set paths cover
-// logout-while-a-session-is-live.
+// No-auth failures on the ACP surface surface as authRequired (-32000)
+// so clients route to their login UI, not generic -32603 (prompt) or
+// -32602 (multi-model model-set). Keyless → rejected at session/new;
+// logout-while-live → prompt and model-set paths.
 describe("no-auth failures surface as authRequired (-32000)", () => {
 	const makeNoAuthAgent = (fake: FakeAgentSession) =>
 		new KimchiAcpAgent(makeConn(), {
@@ -4266,9 +4261,8 @@ describe("no-auth failures surface as authRequired (-32000)", () => {
 		expect((err as Error).message).not.toMatch(/unknown\/unknown/)
 	})
 
-	// Documents the deliberate carve-out: loadSession keeps the presence-only
-	// gate so re-loading an existing on-disk session after a logout doesn't
-	// break its lifecycle — the first prompt surfaces -32000 instead.
+	// Deliberate carve-out: loadSession stays presence-only so reload after
+	// logout works; the first prompt surfaces -32000.
 	it("loadSession still succeeds on a keyless machine (presence-only gate)", async () => {
 		const fake = new FakeAgentSession("session-noauth-load")
 		fake.authConfigured = false
@@ -4287,11 +4281,10 @@ describe("no-auth failures surface as authRequired (-32000)", () => {
 	})
 })
 
-// A turn can die on a provider/transport error (bad or stale credential,
-// quota, outage) without session.prompt() ever rejecting: pi terminates the
-// turn with an assistant message carrying stopReason "error" + errorMessage
-// and resolves quietly. ACP must NOT report that as a happy end_turn — clients
-// see a chat that "sent" and returned nothing with no error anywhere.
+// A turn can die on a provider error (stale credential, quota, outage)
+// without session.prompt() rejecting: pi ends it with stopReason "error"
+// + errorMessage and resolves quietly. Must not report happy end_turn —
+// clients see a "sent" chat with no reply and no error.
 describe("terminal turn errors surface instead of silent end_turn", () => {
 	const makeAgent = (fake: FakeAgentSession) =>
 		new KimchiAcpAgent(makeConn(), {
@@ -4300,9 +4293,7 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 			sessionFactory: async () => asSession(fake),
 		})
 
-	// Builds the assistant message_end pi emits for a FAILED response after
-	// retries exhaust (per pi-ai's AssistantMessageEvent docs: streams
-	// terminate with stopReason "error" and errorMessage).
+	// pi's message_end for a failed response (retries exhausted).
 	function assistantErrorEvent(errorMessage: string): AgentSessionEvent {
 		const message: AssistantMessage = {
 			role: "assistant",
@@ -4346,8 +4337,7 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		return { type: "message_end", message }
 	}
 
-	// pi tags user-initiated aborts with stopReason "aborted" — these must
-	// never be converted to turn errors.
+	// aborted = user-initiated; never a turn error.
 	function assistantAbortedEvent(): AgentSessionEvent {
 		const message: AssistantMessage = {
 			role: "assistant",
@@ -4369,15 +4359,12 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		return { type: "message_end", message }
 	}
 
-	// The stale-credential hole (follow-up to #367): hasConfiguredAuth is a
-	// presence check — a present-but-dead key passes the session/new gate and
-	// only fails when the first request hits the provider. The 401 must reach
-	// the client as authRequired so its login pane opens; today it is a silent
-	// zero-token end_turn.
+	// Presence-check hole: a present-but-dead key passes session/new and
+	// fails only on first request. The 401 must surface as authRequired
+	// (login pane opens), not a silent zero-token end_turn.
 	it("session/prompt rejects with -32000 when the turn dies on a 401 from a stale configured credential", async () => {
 		const fake = new FakeAgentSession("session-stale-cred")
-		// authConfigured stays true: the credential EXISTS on disk, it is just
-		// dead server-side — hasConfiguredAuth alone cannot catch this.
+		// authConfigured stays true: the key exists, it's dead server-side.
 		const agent = makeAgent(fake)
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		fake.promptImpl = async () => {
@@ -4394,16 +4381,13 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		)
 		expect(err).toMatchObject({ code: -32000 })
 		expect((err as Error).message).toMatch(/auth required/)
-		// Keep the provider's own text in the message so debugging can tell stale
-		// credentials from a genuinely missing one.
+		// Provider text stays in the message: debugging can tell stale from missing.
 		expect((err as Error).message).toMatch(/401/)
 	})
 
-	// Second half of the chain: the turn's terminal 401 is the FIRST time
-	// the process learns this on-disk key is dead (it passed session/new's
-	// presence gate). auth_status must flip to logged-out for subsequent
-	// calls on this connection — otherwise Studio's settings screen keeps
-	// claiming a session that can no longer do anything.
+	// Chain second half: the turn-time 401 is the first proof this key is
+	// dead (it passed session/new); later auth_status calls must read
+	// logged-out.
 	it("marks the model's provider stale when the turn dies on a 401, so auth_status flips", async () => {
 		resetCredentialStalenessForTests()
 		const fake = new FakeAgentSession("session-401-marks-stale")
@@ -4426,8 +4410,7 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 			.prompt({ sessionId: "session-401-marks-stale", prompt: [{ type: "text", text: "hello" }] })
 			.catch((e) => e)
 		expect(err).toMatchObject({ code: -32000 })
-		// Provider-level mark: the turn's error cannot be attributed to a
-		// specific on-disk key.
+		// Provider-level mark: the turn's error names no specific key.
 		expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
 	})
 
@@ -4470,17 +4453,15 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		expect((err as Error).message).toMatch(/internal server error/)
 	})
 
-	// Retry semantics guard: pi auto-retries failed responses; only the LAST
-	// assistant message's stopReason decides the turn outcome. An error
-	// message_end whose retry then succeeds must not poison the turn.
+	// pi auto-retries; only the LAST message's stopReason decides: error →
+	// retry succeeds → must not poison the turn.
 	it("does not fail the turn when pi's internal retry recovers after a failed attempt", async () => {
 		const fake = new FakeAgentSession("session-retry-recovers")
 		const agent = makeAgent(fake)
 		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
-			// First attempt failed (transient 429); pi emits auto-retry and
-			// re-runs, producing a successful assistant message next.
+			// 429 error → pi auto-retry → successful message_end next.
 			fake.emit(assistantErrorEvent("Request failed with status code 429: rate limited"))
 			fake.emit({ type: "agent_start" })
 			fake.emit(assistantSuccessEvent())

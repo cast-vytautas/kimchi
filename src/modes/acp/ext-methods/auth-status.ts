@@ -52,16 +52,12 @@ export type AuthStatusPaths = {
  */
 export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStatusResponse> {
 	const apiKey = loadConfig(paths.configPath ? { configPath: paths.configPath } : undefined).apiKey
-	// Presence AND validity: a key the provider already rejected (401 at
-	// refresh / turn time — recorded in the staleness registry by this
-	// process) must not flip clients' "logged in" surfaces on. The whole
-	// point of the registry: stale-key-on-disk reads logged-out here, even
-	// though the file system says the key exists.
+	// Present-but-rejected key reads logged-out (marks come from observed
+	// 401s — credential-staleness.ts), even though the key exists on disk.
 	if (apiKey) {
 		return { authenticated: !isCredentialStale(apiKey, KIMCHI_PROVIDER_ID) }
 	}
-	// OAuth half (auth.json): no specific key to attribute a 401 to — only
-	// the provider-level mark applies.
+	// auth.json half: no key to blame — provider-level mark only.
 	if (isCredentialStale(undefined, KIMCHI_PROVIDER_ID)) {
 		return { authenticated: false }
 	}

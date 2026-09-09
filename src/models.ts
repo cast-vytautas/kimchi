@@ -466,9 +466,9 @@ export async function updateModelsConfig(
 		fetched = await fetchAvailableModels(apiKey, options)
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err)
-		// A 401-class rejection proves the on-disk key is DEAD (present-but-
-		// invalid presence checks can't see). Record it so auth_status and
-		// terminals report logged-out instead of "logged in but broken".
+		// Refresh is an authenticated call: a 401 means the on-disk key is
+		// dead, not absent. Mark before the rethrow decision so the mark
+		// survives the cached-fallback path too.
 		if (isAuthRejectedMessage(message)) {
 			markCredentialStale(apiKey, "kimchi-dev")
 		}
@@ -477,8 +477,7 @@ export async function updateModelsConfig(
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
 		return { models: sortModels([...cached, ...otherModels]) }
 	}
-	// A successful authenticated refresh proves the credential store is
-	// healthy — wipe any staleness marks accumulated from earlier 401s.
+	// Authenticated success clears marks from earlier 401s.
 	clearCredentialStale("kimchi-dev")
 
 	const activeModels = fetched.filter((m) => m.status !== "sunset" && m.limits.max_output_tokens > 0)

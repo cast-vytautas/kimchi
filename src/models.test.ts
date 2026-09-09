@@ -70,10 +70,8 @@ describe("updateModelsConfig", () => {
 		vi.restoreAllMocks()
 	})
 
-	// A models refresh is an authenticated call — a 401 from it means the
-	// on-disk key is DEAD, not just absent (presence checks cannot tell).
-	// auth_status reads this registry so Studio's account section stops
-	// showing "logged in" for a credential the server already rejects.
+	// 401 on refresh = dead key, not absent (presence can't tell);
+	// auth_status must read logged-out for it.
 	describe("credential staleness signaling", () => {
 		it("marks the api key stale when the refresh is rejected with 401", async () => {
 			vi.mocked(fetch).mockResolvedValueOnce({
@@ -103,10 +101,7 @@ describe("updateModelsConfig", () => {
 			expect(isCredentialStale("some-key", "kimchi-dev")).toBe(false)
 		})
 
-		// Re-login path: a successful authenticated refresh proves the
-		// credential store is healthy again — wipe all marks for the
-		// provider (covers a fresh key AND an OAuth credential revived
-		// elsewhere).
+		// Re-login success wipes all marks (fresh key + revived OAuth).
 		it("clears all staleness marks for kimchi-dev when a refresh succeeds", async () => {
 			markCredentialStale("dead-key", "kimchi-dev")
 			markCredentialStale(undefined, "kimchi-dev")

@@ -29,10 +29,7 @@ describe("credential-staleness registry", () => {
 	it("scopes provider-level staleness: a 401 on kimchi-dev poisons the provider even without a key", () => {
 		markCredentialStale(undefined, "kimchi-dev")
 		expect(isCredentialStale(undefined, "kimchi-dev")).toBe(true)
-		// A provider-level mark blames "some credential" — we cannot tell at
-		// read time whether the key being presented is the one that 401'd, so
-		// ANY key for that provider counts as stale until an authenticated
-		// success (model refresh / re-login) explicitly clears the mark.
+		// Provider mark can't name the key: any key reads stale until cleared.
 		expect(isCredentialStale("fresh-key", "kimchi-dev")).toBe(true)
 	})
 
@@ -66,8 +63,7 @@ describe("isAuthRejectedMessage", () => {
 		"Failed to fetch models: 500 Internal Server Error",
 		"rate limited, retry in 30s",
 		"network down",
-		// A bare substring must not falsely trigger: "authentication" is fine,
-		// but unrelated prose mentioning keys is not an auth rejection.
+		// Substrings must not trigger: prose mentioning "key" is not a rejection.
 		"keybinding conflict detected",
 	])("does not flag non-auth errors: %s", (message) => {
 		expect(isAuthRejectedMessage(message)).toBe(false)
