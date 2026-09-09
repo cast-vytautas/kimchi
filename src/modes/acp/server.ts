@@ -539,14 +539,12 @@ export class KimchiAcpAgent implements Agent {
 		// new sessions no longer pick it up via the login extension.
 		clearApiKey()
 
-		// Clear stored OAuth credentials (refresh tokens etc.) for the
-		// kimchi-dev provider from auth.json.
-		const modelRuntime = await ModelRuntime.create({
-			authPath: join(this.agentDir, "auth.json"),
-			modelsPath: join(this.agentDir, "models.json"),
-			refreshOnCreate: false,
-		})
-		await modelRuntime.logout(KIMCHI_PROVIDER_ID)
+		// Remove every Kimchi credential from auth.json — kimchi-dev plus all
+		// kimchi-dev/* sub-provider entries. AuthStorage.logout() only removes
+		// the exact provider id, leaving e.g. kimchi-dev/anthropic behind; the
+		// surviving entry would make a freshly started process look
+		// authenticated again. syncPiAuth matches the CLI logout path.
+		await syncPiAuth(join(this.agentDir, "auth.json"), join(this.agentDir, "models.json"), "")
 
 		return {}
 	}
