@@ -539,11 +539,8 @@ export class KimchiAcpAgent implements Agent {
 		// new sessions no longer pick it up via the login extension.
 		clearApiKey()
 
-		// Remove every Kimchi credential from auth.json — kimchi-dev plus all
-		// kimchi-dev/* sub-provider entries. AuthStorage.logout() only removes
-		// the exact provider id, leaving e.g. kimchi-dev/anthropic behind; the
-		// surviving entry would make a freshly started process look
-		// authenticated again. Matches the CLI logout path.
+		// clearPiAuth over AuthStorage.logout(): it removes kimchi-dev/*
+		// sub-provider entries, not just the exact kimchi-dev id.
 		await clearPiAuth(join(this.agentDir, "auth.json"))
 
 		return {}

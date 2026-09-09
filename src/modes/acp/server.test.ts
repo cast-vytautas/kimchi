@@ -779,14 +779,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			} catch {}
 		})
 
-		// Regression (kimchi-studio #364): logout used to remove only the exact
-		// "kimchi-dev" entry, leaving sub-provider credentials like
-		// "kimchi-dev/anthropic" in the shared credential map. A freshly started
-		// harness would then find the survivor and report authenticated again.
+		// Regression: logout must remove kimchi-dev/* sub-provider entries, not just kimchi-dev.
 		it("clears API key from config and every Kimchi credential from auth storage", async () => {
-			// Seed auth.json with kimchi-dev plus a sub-provider OAuth entry and
-			// an unrelated provider entry so we can verify logout removes all
-			// Kimchi credentials but leaves other providers untouched.
 			writeFileSync(
 				join(tempAgentDir, "auth.json"),
 				JSON.stringify({
@@ -808,8 +802,6 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// clearApiKey is mocked — verify it was called to clear the config file.
 			expect(clearApiKey).toHaveBeenCalledOnce()
 
-			// Every Kimchi entry must be gone from auth.json; the unrelated
-			// provider entry must survive. Read it back and verify.
 			const authJson = JSON.parse(
 				// eslint-disable-next-line no-restricted-syntax
 				await import("node:fs").then((fs) => fs.readFileSync(join(tempAgentDir, "auth.json"), "utf-8")),
