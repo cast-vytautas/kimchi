@@ -13,6 +13,9 @@ class FakeAgentSession {
 		getAvailable: () => [{ provider: "test", id: "test-model", name: "Test" }],
 		find: (provider: string, id: string) =>
 			this.modelRegistry.getAvailable().find((m) => m.provider === provider && m.id === id),
+		// session/new gates on configured auth (assertSessionModelHasAuth) —
+		// this suite tests steering, so report auth as always configured.
+		hasConfiguredAuth: (_model: { provider: string }) => true,
 	}
 	sessionManager = {
 		getBranch: () => [],
