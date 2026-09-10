@@ -94,6 +94,7 @@ import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { updateModelsConfig } from "../../models.js"
 import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
+import { ACP_REATTACH_MID_TURN_META_KEY, buildToolCallId } from "../../sandbox/worker/acp-protocol.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -126,9 +127,6 @@ const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
  * an ACP client (e.g. Studio's in-app login) rather than `kimchi login`. It
  * must not assume the terminal CLI. */
 export const ACP_SUCCESS_MESSAGE = "You are now connected to Kimchi. You can close this window and start using it."
-
-/** `_meta` key opting `session/load` into mid-turn attach; strict guard stays default. */
-export const ACP_REATTACH_MID_TURN_META_KEY = "kimchi/reattachMidTurn"
 
 /** Resolve --plan/--auto/--yolo CLI flags into a PermissionMode. */
 function resolveCliPermissionMode(): PermissionMode | undefined {
@@ -1646,7 +1644,7 @@ export class KimchiAcpAgent implements Agent {
 	private getOrAllocateAcpToolCallId(record: SessionRecord, piToolCallId: string, toolName: string): string {
 		let acpId = record.toolCallIdMap.get(piToolCallId)
 		if (acpId === undefined) {
-			acpId = `kt.${toolName}.${record.nextToolCallId++}`
+			acpId = buildToolCallId(toolName, record.nextToolCallId++)
 			record.toolCallIdMap.set(piToolCallId, acpId)
 		}
 		return acpId
