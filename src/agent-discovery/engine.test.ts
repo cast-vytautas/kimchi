@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -621,18 +621,61 @@ describe("discoverAgent engine", () => {
 			}
 		})
 
+		// S9: a winning skills directory that exists but cannot be read must be
+		// distinct from an empty one — skillCount -1 so import_discover keeps
+		// the app with an empty payload ("couldn't read what is here" vs
+		// "nothing here"). Real EACCES, not a mocked discoverAgent.
+		const canDenyDirectoryRead = process.platform !== "win32" && (process.getuid?.() ?? 0) !== 0
+		it.runIf(canDenyDirectoryRead)(
+			"S9: reports skillCount -1 when the winning skills directory exists but is unreadable",
+			() => {
+				const skillsDir = join(tempDir, "locked")
+				mkdirSync(join(skillsDir, "alpha"), { recursive: true })
+				chmodSync(skillsDir, 0o000)
+				try {
+					const discovery = discoverAgent(makeDef({ skillsDirs: [skillsDir] }), { cwd: tempDir })
+					expect(discovery.skillsDir).toBe(skillsDir)
+					expect(discovery.skillCount).toBe(-1)
+					expect(discovery.skills).toEqual([])
+				} finally {
+					chmodSync(skillsDir, 0o700)
+				}
+			},
+		)
+
+		// S10: process.cwd() throws ENOENT (uv_cwd) when the working directory
+		// has been deleted out from under a long-lived process. "home" scope
+		// must never touch it — import_discover runs exactly in that environment.
+		it("S10: home scope never reads process.cwd(), so a deleted cwd does not crash discovery", () => {
+			const doomed = mkdtempSync(join(tmpdir(), "kimchi-deleted-cwd-"))
+			process.chdir(doomed)
+			rmSync(doomed, { recursive: true, force: true })
+			try {
+				const def = makeDef({ skillsDirs: [{ projectRelative: join(".x", "skills") }] })
+				expect(() => discoverAgent(def, { scope: "home" })).not.toThrow()
+				expect(discoverAgent(def, { scope: "home" }).skillsDir).toBeUndefined()
+			} finally {
+				process.chdir(savedCwd)
+			}
+		})
+
 		describe("resolveDirCandidates / selectDirCandidates", () => {
 			it("resolves plain strings through and project candidates against cwd", () => {
-				expect(resolveDirCandidates([join(tempDir, "x"), { projectRelative: join(".k", "skills") }], "/base")).toEqual([
-					join(tempDir, "x"),
-					join("/base", ".k", "skills"),
-				])
+				expect(
+					resolveDirCandidates([join(tempDir, "x"), { projectRelative: join(".k", "skills") }], () => "/base"),
+				).toEqual([join(tempDir, "x"), join("/base", ".k", "skills")])
+				// The cwd getter is only invoked for { projectRelative } candidates
+				const getCwd = vi.fn(() => "/base")
+				resolveDirCandidates([join(tempDir, "abs")], getCwd)
+				expect(getCwd).not.toHaveBeenCalled()
+				resolveDirCandidates([{ projectRelative: ".k" }], getCwd)
+				expect(getCwd).toHaveBeenCalledTimes(1)
 			})
 
 			it("warns on a non-absolute plain-string candidate instead of silently depending on ambient cwd", () => {
 				const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 				try {
-					expect(resolveDirCandidates(["relative/dir", join(tempDir, "abs")], "/base")).toEqual([
+					expect(resolveDirCandidates(["relative/dir", join(tempDir, "abs")], () => "/base")).toEqual([
 						"relative/dir",
 						join(tempDir, "abs"),
 					])

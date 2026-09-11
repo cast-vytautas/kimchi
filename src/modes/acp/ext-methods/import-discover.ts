@@ -37,6 +37,12 @@ export interface ImportDiscoverSkill {
  * name and the command or URL are reported — args, env, headers and tokens
  * are deliberately left out. Entries with neither a command nor a URL give a
  * client nothing to act on and are dropped.
+ *
+ * URLs are redacted before leaving the harness: userinfo (user:pass@) and
+ * the query string are stripped, since hosted MCP gateways commonly embed
+ * credentials there. Credentials embedded in URL *path segments* cannot be
+ * detected generically — clients must treat a server URL as potentially
+ * sensitive and decide how to display and store it.
  */
 export interface ImportDiscoverMcpServer {
 	name: string
@@ -60,6 +66,28 @@ export interface ImportDiscoverResult {
 	apps: ImportDiscoverSourceApp[]
 }
 
+/**
+ * Strip the credential-carrying parts of a server URL before it leaves the
+ * harness: userinfo (user:pass@) and the query string (API keys in ?key=…).
+ * Path-embedded credentials cannot be detected generically — documented on
+ * ImportDiscoverMcpServer — so the client contract treats URLs as potentially
+ * sensitive regardless.
+ */
+function redactUrl(raw: string): string {
+	try {
+		const u = new URL(raw)
+		u.username = ""
+		u.password = ""
+		u.search = ""
+		return u.toString()
+	} catch {
+		// Not parseable as a URL — leave it; the entry is still actionable only
+		// if the client can use it, and it carries no *added* exposure beyond
+		// what the source config already holds.
+		return raw
+	}
+}
+
 function toImportDiscoverMcpServer(
 	name: string,
 	entry: ServerEntry,
@@ -69,7 +97,7 @@ function toImportDiscoverMcpServer(
 	if (entry.command === undefined && entry.url === undefined) return undefined
 	const server: ImportDiscoverMcpServer = { name, sourceAppId, sourceAppName }
 	if (entry.command !== undefined) server.command = entry.command
-	if (entry.url !== undefined) server.url = entry.url
+	if (entry.url !== undefined) server.url = redactUrl(entry.url)
 	return server
 }
 
@@ -88,10 +116,11 @@ export function importDiscover(definitions: readonly AgentDefinition[] = AGENT_D
 			.map(([name, entry]) => toImportDiscoverMcpServer(name, entry, discovery.id, discovery.displayName))
 			.filter((server) => server !== undefined)
 		// An app with nothing importable is left out entirely, so a client never
-		// has to filter empty rows — except when its skills directory contains
-		// skill-looking entries whose enumeration failed (skillCount > 0 but no
-		// readable skills). Report it with an empty payload so the client can
-		// distinguish "nothing here" from "couldn't read what is here".
+		// has to filter empty rows — except when its skills directory could not
+		// be read (skillCount === -1) or contains skill-looking entries whose
+		// enumeration failed (skillCount > 0 with no readable skills). Report it
+		// with an empty payload so the client can distinguish "nothing here"
+		// from "couldn't read what is here".
 		if (skills.length === 0 && mcpServers.length === 0 && discovery.skillCount === 0) continue
 		apps.push({ id: discovery.id, displayName: discovery.displayName, skills, mcpServers })
 	}

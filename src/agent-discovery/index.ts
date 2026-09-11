@@ -94,6 +94,12 @@ export interface AgentDiscovery {
 	readonly id: string
 	readonly displayName: string
 	readonly mcpServers: Record<string, ServerEntry>
+	/**
+	 * Number of subdirectories in the winning skills directory, or -1 when the
+	 * directory exists but could not be read (e.g. EACCES) — distinct from 0
+	 * ("empty") so consumers can tell "nothing here" from "couldn't read what
+	 * is here".
+	 */
 	readonly skillCount: number
 	/**
 	 * Enumerated skills from the winning skills directory. Added alongside

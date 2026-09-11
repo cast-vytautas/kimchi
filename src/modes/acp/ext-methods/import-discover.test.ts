@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -193,7 +203,10 @@ describe("import_discover", () => {
 			JSON.stringify({
 				mcpServers: {
 					stdio: { command: "cmd", args: ["--x"], env: { SECRET: "s" } },
-					http: { url: "https://mcp.example.com", headers: { Authorization: "Bearer tok" } },
+					http: {
+						url: "https://user:pass@mcp.example.com/mcp?key=s3cr3t",
+						headers: { Authorization: "Bearer tok" },
+					},
 				},
 			}),
 			"utf-8",
@@ -204,12 +217,17 @@ describe("import_discover", () => {
 		const servers = result.apps[0].mcpServers
 		expect(servers).toEqual([
 			{ name: "stdio", command: "cmd", sourceAppId: "app", sourceAppName: "App" },
-			{ name: "http", url: "https://mcp.example.com", sourceAppId: "app", sourceAppName: "App" },
+			// URL credentials (userinfo + query string) are redacted before
+			// leaving the harness
+			{ name: "http", url: "https://mcp.example.com/mcp", sourceAppId: "app", sourceAppName: "App" },
 		])
 		const serialized = JSON.stringify(servers)
 		expect(serialized).not.toContain("SECRET")
 		expect(serialized).not.toContain("Bearer")
 		expect(serialized).not.toContain("args")
+		expect(serialized).not.toContain("s3cr3t")
+		expect(serialized).not.toContain("user:pass")
+		expect(serialized).not.toContain("key=")
 	})
 
 	it("performs no writes — discovery leaves the disk exactly as it found it", () => {
@@ -277,6 +295,29 @@ describe("import_discover", () => {
 		expect(result.apps[0].skills).toHaveLength(1)
 		spy.mockRestore()
 	})
+
+	// Real EACCES against the real filesystem — the mocked test above cannot
+	// catch the distinction between "directory empty" and "directory unreadable".
+	it.runIf(process.platform !== "win32" && (process.getuid?.() ?? 0) !== 0)(
+		"keeps an app whose skills directory exists but is unreadable (real EACCES, not mocked)",
+		() => {
+			const skillsDir = join(tempDir, "locked")
+			mkdirSync(join(skillsDir, "alpha"), { recursive: true })
+			chmodSync(skillsDir, 0o000)
+			try {
+				const result = importDiscover([
+					makeDef({ id: "unreadable", displayName: "Unreadable", skillsDirs: [skillsDir] }),
+				])
+				// skillCount is -1 (existed but unreadable), so the row is kept
+				// with an empty payload instead of being dropped
+				expect(result.apps.map((a) => a.id)).toEqual(["unreadable"])
+				expect(result.apps[0].skills).toEqual([])
+				expect(result.apps[0].mcpServers).toEqual([])
+			} finally {
+				chmodSync(skillsDir, 0o700)
+			}
+		},
+	)
 
 	it("registers and advertises the import_discover capability", () => {
 		expect(AVAILABLE_EXT_METHODS.import_discover).toBe(`_${CAPABILITIES_KEY}/import_discover`)

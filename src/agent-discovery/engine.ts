@@ -69,10 +69,16 @@ export interface DiscoverAgentOptions {
 	readonly cwd?: string
 }
 
-/** Resolve a candidate list to absolute directories against the given cwd. */
-export function resolveDirCandidates(candidates: readonly DirCandidate[], cwd: string): string[] {
+/**
+ * Resolve a candidate list to absolute directories. The cwd is supplied as a
+ * getter and only invoked when a `{ projectRelative }` candidate is actually
+ * present — so callers that pass no relative candidates (e.g. "home"-scoped
+ * discovery) never touch `process.cwd()`, which throws ENOENT (uv_cwd) when
+ * the working directory has been deleted out from under a long-lived process.
+ */
+export function resolveDirCandidates(candidates: readonly DirCandidate[], getCwd: () => string): string[] {
 	return candidates.map((c) => {
-		if (typeof c !== "string") return join(cwd, c.projectRelative)
+		if (typeof c !== "string") return join(getCwd(), c.projectRelative)
 		if (!isAbsolute(c)) {
 			// Plain strings are a documented home-level-absolute convention. A
 			// relative one would silently resolve against the ambient cwd inside
@@ -126,7 +132,11 @@ function enumerateSkills(skillsDir: string): DiscoveredSkill[] {
 
 export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptions): AgentDiscovery {
 	const scope = options?.scope ?? "all"
-	const cwd = options?.cwd ?? process.cwd()
+	// Resolved lazily, and only when a { projectRelative } candidate needs it:
+	// process.cwd() throws ENOENT (uv_cwd) when the working directory has been
+	// deleted out from under a long-lived process, and "home"-scoped discovery
+	// must stay cwd-independent.
+	const getCwd = () => options?.cwd ?? process.cwd()
 	const parse = def.parseConfig ?? JSON.parse
 	const mcpServers: Record<string, ServerEntry> = {}
 
@@ -170,7 +180,7 @@ export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptio
 		// file in configPaths is kept and later files' duplicates are skipped.
 	}
 
-	const skillsDirs = resolveDirCandidates(selectDirCandidates(def.skillsDirs, scope), cwd)
+	const skillsDirs = resolveDirCandidates(selectDirCandidates(def.skillsDirs, scope), getCwd)
 	let skillCount = 0
 	let skills: DiscoveredSkill[] = []
 	let skillsDir: string | undefined
@@ -181,13 +191,18 @@ export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptio
 				skillCount = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).length
 			} catch (err) {
 				console.warn(`Failed to read ${def.displayName} skills directory at ${dir}: ${msg(err)}`)
+				// The directory exists but could not be read (e.g. EACCES). -1 is
+				// distinct from 0 ("empty") so import_discover keeps the app row —
+				// the client must be able to tell "nothing here" from "couldn't
+				// read what is here".
+				skillCount = -1
 			}
 			skills = enumerateSkills(dir)
 			break
 		}
 	}
 
-	const commandsDirs = resolveDirCandidates(selectDirCandidates(def.commandsDirs, scope), cwd)
+	const commandsDirs = resolveDirCandidates(selectDirCandidates(def.commandsDirs, scope), getCwd)
 	let commandsCount = 0
 	let commandsDir: string | undefined
 	for (const dir of commandsDirs) {
