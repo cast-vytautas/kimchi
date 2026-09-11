@@ -37,6 +37,11 @@ vi.mock("../../config.js", async (importOriginal) => {
 		...actual,
 		writeApiKey: vi.fn(),
 		clearApiKey: vi.fn(),
+		// The set_onboarding_flag ext-method writes the shared config's
+		// onboarding namespace; mock it so server-level tests don't touch the
+		// real config file. Write semantics are covered by the handler's own
+		// unit tests against a temp config path.
+		writeStudioOnboardingSeenAt: vi.fn(),
 		// Real implementation by default; individual tests use
 		// mockReturnValueOnce to simulate credential-store transitions
 		// (writeApiKey/clearApiKey are mocked, so they never touch disk).
@@ -63,7 +68,7 @@ const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { clearApiKey, loadConfig, writeApiKey } from "../../config.js"
+import { clearApiKey, loadConfig, writeApiKey, writeStudioOnboardingSeenAt } from "../../config.js"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "../../credential-staleness.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
@@ -1015,6 +1020,49 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
 				authenticated: true,
 			})
+		})
+	})
+
+	describe("extMethod set_onboarding_flag", () => {
+		// The shared-config write is mocked (see the config.js mock above) —
+		// handler write semantics (persistence, sibling-key preservation) are
+		// covered by ext-methods/set-onboarding-flag.test.ts against a temp path.
+
+		function makeTestAgent(): KimchiAcpAgent {
+			return new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/kimchi-acp-test-agent-dir-set-onboarding-flag",
+				sessionFactory: async () => asSession(fake),
+			})
+		}
+
+		it("advertises set_onboarding_flag in the initialize capabilities _meta", async () => {
+			const response = await makeTestAgent().initialize({ protocolVersion: 1 })
+			expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({
+				set_onboarding_flag: true,
+			})
+		})
+
+		// Sessionless by design (ADR-0043): onboarding completion is global
+		// per-machine state, so the call carries no sessionId.
+		it("writes the onboarding flag without requiring a session", async () => {
+			vi.mocked(writeStudioOnboardingSeenAt).mockClear()
+
+			await expect(
+				makeTestAgent().extMethod(AVAILABLE_EXT_METHODS.set_onboarding_flag, {
+					seenAt: "2026-09-11T10:00:00.000Z",
+				}),
+			).resolves.toEqual({})
+
+			expect(writeStudioOnboardingSeenAt).toHaveBeenCalledWith("2026-09-11T10:00:00.000Z", undefined)
+		})
+
+		it("rejects an invalid seenAt as invalidParams", async () => {
+			vi.mocked(writeStudioOnboardingSeenAt).mockClear()
+			await expect(
+				makeTestAgent().extMethod(AVAILABLE_EXT_METHODS.set_onboarding_flag, { seenAt: "not-a-date" }),
+			).rejects.toThrow(/seenAt must be an ISO-8601/)
+			expect(writeStudioOnboardingSeenAt).not.toHaveBeenCalled()
 		})
 	})
 

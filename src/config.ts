@@ -78,6 +78,7 @@ export interface OnboardingConfig {
 	sessionModeWizardSeenAt?: string
 	hideSessionModeDialog?: boolean
 	teleportHelpSeenAt?: string
+	studioOnboardingSeenAt?: string
 }
 
 export interface SurveyConfig {
@@ -340,11 +341,16 @@ function parseOnboardingConfig(value: unknown): OnboardingConfig | undefined {
 	const hideSessionModeDialog = typeof raw.hideSessionModeDialog === "boolean" ? raw.hideSessionModeDialog : undefined
 	const teleportHelpSeenAt =
 		typeof raw.teleportHelpSeenAt === "string" && raw.teleportHelpSeenAt.length > 0 ? raw.teleportHelpSeenAt : undefined
+	const studioOnboardingSeenAt =
+		typeof raw.studioOnboardingSeenAt === "string" && raw.studioOnboardingSeenAt.length > 0
+			? raw.studioOnboardingSeenAt
+			: undefined
 
 	return {
 		...(sessionModeWizardSeenAt ? { sessionModeWizardSeenAt } : {}),
 		...(hideSessionModeDialog !== undefined ? { hideSessionModeDialog } : {}),
 		...(teleportHelpSeenAt ? { teleportHelpSeenAt } : {}),
+		...(studioOnboardingSeenAt ? { studioOnboardingSeenAt } : {}),
 	}
 }
 
@@ -570,6 +576,17 @@ export function writeSessionModeWizardSeenAt(seenAt: string, configPath?: string
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateOnboardingConfig(path, (onboarding) => {
 		onboarding.sessionModeWizardSeenAt = seenAt
+	})
+}
+
+export function readStudioOnboardingSeenAt(configPath?: string): string | undefined {
+	return readConfigExtras(configPath ?? KIMCHI_CONFIG_PATH).onboarding?.studioOnboardingSeenAt
+}
+
+export function writeStudioOnboardingSeenAt(seenAt: string, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateOnboardingConfig(path, (onboarding) => {
+		onboarding.studioOnboardingSeenAt = seenAt
 	})
 }
 
