@@ -35,7 +35,8 @@ export interface ImportDiscoverSkill {
 /**
  * One MCP server found in a source app, attributed to its source. Only the
  * name and the command or URL are reported — args, env, headers and tokens
- * are deliberately left out.
+ * are deliberately left out. Entries with neither a command nor a URL give a
+ * client nothing to act on and are dropped.
  */
 export interface ImportDiscoverMcpServer {
 	name: string
@@ -64,7 +65,8 @@ function toImportDiscoverMcpServer(
 	entry: ServerEntry,
 	sourceAppId: string,
 	sourceAppName: string,
-): ImportDiscoverMcpServer {
+): ImportDiscoverMcpServer | undefined {
+	if (entry.command === undefined && entry.url === undefined) return undefined
 	const server: ImportDiscoverMcpServer = { name, sourceAppId, sourceAppName }
 	if (entry.command !== undefined) server.command = entry.command
 	if (entry.url !== undefined) server.url = entry.url
@@ -82,9 +84,9 @@ export function importDiscover(definitions: readonly AgentDefinition[] = AGENT_D
 			sourceAppId: discovery.id,
 			sourceAppName: discovery.displayName,
 		}))
-		const mcpServers = Object.entries(discovery.mcpServers).map(([name, entry]) =>
-			toImportDiscoverMcpServer(name, entry, discovery.id, discovery.displayName),
-		)
+		const mcpServers = Object.entries(discovery.mcpServers)
+			.map(([name, entry]) => toImportDiscoverMcpServer(name, entry, discovery.id, discovery.displayName))
+			.filter((server) => server !== undefined)
 		// A source app with nothing importable is left out entirely, so a
 		// client never has to filter empty rows.
 		if (skills.length === 0 && mcpServers.length === 0) continue

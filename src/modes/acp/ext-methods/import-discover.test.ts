@@ -138,6 +138,28 @@ describe("import_discover", () => {
 		expect(result.apps[0].skills.map((s) => s.name)).toEqual(["good"])
 	})
 
+	it("drops an MCP server with neither command nor url, and omits an app left with nothing", () => {
+		const config = join(tempDir, "config.json")
+		writeFileSync(
+			config,
+			JSON.stringify({ mcpServers: { broken: { args: ["--x"] }, good: { command: "cmd" } } }),
+			"utf-8",
+		)
+		const onlyBroken = join(tempDir, "only-broken.json")
+		writeFileSync(onlyBroken, JSON.stringify({ mcpServers: { broken: {} } }), "utf-8")
+
+		const result = importDiscover([
+			makeDef({ id: "mixed", displayName: "Mixed", configPaths: [config] }),
+			makeDef({ id: "only-broken", displayName: "Only Broken", configPaths: [onlyBroken] }),
+		])
+
+		// The name-only row is dropped — a client could not act on it
+		expect(result.apps.map((a) => a.id)).toEqual(["mixed"])
+		expect(result.apps[0].mcpServers).toEqual([
+			{ name: "good", command: "cmd", sourceAppId: "mixed", sourceAppName: "Mixed" },
+		])
+	})
+
 	it("reports MCP servers with command or URL, never env, headers or tokens", () => {
 		const config = join(tempDir, "config.json")
 		writeFileSync(

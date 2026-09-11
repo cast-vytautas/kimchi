@@ -89,7 +89,15 @@ export function selectDirCandidates(
  */
 function enumerateSkills(skillsDir: string): DiscoveredSkill[] {
 	try {
-		const { skills } = loadSkillsFromDir({ dir: skillsDir, source: skillsDir })
+		const { skills, diagnostics } = loadSkillsFromDir({ dir: skillsDir, source: skillsDir })
+		// The loader omits an unreadable/unparseable skill and reports why via
+		// diagnostics — surface them, or the skill vanishes from discovery
+		// silently and the user has no observable reason why.
+		for (const diagnostic of diagnostics) {
+			console.warn(
+				`Skill discovery in ${skillsDir}: ${diagnostic.message}${diagnostic.path ? ` (${diagnostic.path})` : ""}`,
+			)
+		}
 		return skills.map((s) => ({ name: s.name, description: s.description, path: s.filePath }))
 	} catch (err) {
 		console.warn(`Failed to enumerate skills in ${skillsDir}: ${msg(err)}`)

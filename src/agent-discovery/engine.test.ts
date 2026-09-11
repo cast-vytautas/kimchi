@@ -441,6 +441,23 @@ describe("discoverAgent engine", () => {
 			expect(result.skills.map((s) => s.name)).toEqual(["good"])
 		})
 
+		// S2b: the loader's diagnostics for omitted skills are surfaced, not dropped —
+		// otherwise the skill vanishes from discovery with no observable reason why.
+		it("S2b: surfaces loader diagnostics for omitted skills as warnings", () => {
+			const skillsDir = join(tempDir, "skills")
+			writeSkill(skillsDir, "good", "name: good\ndescription: Fine")
+			writeSkill(skillsDir, "broken", "name: [unclosed\ndescription: {{{")
+
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+			try {
+				discoverAgent(makeDef({ skillsDirs: [skillsDir] }))
+				const warned = warnSpy.mock.calls.map((call) => call.join(" "))
+				expect(warned.some((line) => line.includes("broken"))).toBe(true)
+			} finally {
+				warnSpy.mockRestore()
+			}
+		})
+
 		// S3: a skill whose SKILL.md cannot be read is omitted
 		it("S3: omits a skill whose SKILL.md cannot be read", () => {
 			const skillsDir = join(tempDir, "skills")
