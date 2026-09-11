@@ -14,6 +14,9 @@ const failCopy = vi.hoisted(() => ({ pattern: "" }))
 /** When true, the completion writes (skillPaths + migration marker) throw. */
 const failConfigWrite = vi.hoisted(() => ({ fail: false }))
 
+/** Path fragment that makes writeJsonObjectFile throw; set per-test, empty by default. */
+const failJsonWrite = vi.hoisted(() => ({ pattern: "" }))
+
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>()
 	return {
@@ -36,6 +39,11 @@ vi.mock("../../../config.js", async (importOriginal) => {
 		writeMigrationState: (state: Parameters<typeof actual.writeMigrationState>[0], configPath?: string) => {
 			if (failConfigWrite.fail) throw new Error("simulated config write failure")
 			return actual.writeMigrationState(state, configPath)
+		},
+		writeJsonObjectFile: (path: string, value: Record<string, unknown>) => {
+			if (failJsonWrite.pattern && path.includes(failJsonWrite.pattern))
+				throw new Error("simulated mcp config write failure")
+			return actual.writeJsonObjectFile(path, value)
 		},
 	}
 })
@@ -430,6 +438,74 @@ describe("import_apply", () => {
 		])
 		const mcpConfig = JSON.parse(readFileSync(mcpJson, "utf-8")) as { mcpServers: Record<string, ServerEntry> }
 		expect(mcpConfig.mcpServers.fetch).toEqual({ command: "fetchy" })
+	})
+
+	it("starts fresh when mcpServers is a non-object (parses but corrupt), without persisting garbage", () => {
+		const config = join(tempDir, "claude.json")
+		writeFileSync(config, JSON.stringify({ mcpServers: { fetch: { command: "fetchy" } } }), "utf-8")
+		const mcpJson = join(agentDir, "mcp.json")
+		mkdirSync(agentDir, { recursive: true })
+		// Parses fine but mcpServers is a scalar: object-spreading it would
+		// write garbage numeric keys back into the user's mcp.json.
+		writeFileSync(mcpJson, JSON.stringify({ mcpServers: "oops", settings: { toolPrefix: "server" } }), "utf-8")
+
+		const result = apply({ mcpServers: [{ sourceAppId: "claude-code", name: "fetch" }] }, [
+			makeDef({ id: "claude-code", configPaths: [config] }),
+		])
+
+		expect(result.results).toEqual([
+			{ kind: "mcpServer", sourceAppId: "claude-code", name: "fetch", outcome: "imported" },
+		])
+		const mcpConfig = JSON.parse(readFileSync(mcpJson, "utf-8")) as {
+			mcpServers: Record<string, ServerEntry>
+			settings?: unknown
+		}
+		expect(mcpConfig.mcpServers).toEqual({ fetch: { command: "fetchy" } })
+		// Sibling top-level keys survive the recovery.
+		expect(mcpConfig.settings).toEqual({ toolPrefix: "server" })
+	})
+
+	it("downgrades imported MCP servers to error with a warning when the mcp.json write fails", () => {
+		const config = join(tempDir, "claude.json")
+		writeFileSync(config, JSON.stringify({ mcpServers: { fetch: { command: "fetchy" } } }), "utf-8")
+		const skillsDir = join(tempDir, "claude-skills")
+		writeSkill(skillsDir, "deploy", "name: deploy\ndescription: Ship")
+
+		failJsonWrite.pattern = "mcp.json"
+		try {
+			const result = apply(
+				{
+					skills: [{ sourceAppId: "claude-code", path: join(skillsDir, "deploy", "SKILL.md") }],
+					mcpServers: [{ sourceAppId: "claude-code", name: "fetch" }],
+				},
+				[makeDef({ id: "claude-code", configPaths: [config], skillsDirs: [skillsDir] })],
+			)
+
+			// The skill landed; the MCP server did not — reported honestly.
+			expect(result.results).toEqual([
+				{
+					kind: "skill",
+					sourceAppId: "claude-code",
+					path: join(skillsDir, "deploy", "SKILL.md"),
+					name: "deploy",
+					outcome: "imported",
+				},
+				{
+					kind: "mcpServer",
+					sourceAppId: "claude-code",
+					name: "fetch",
+					outcome: "error",
+					reason: "MCP config write failed: simulated mcp config write failure",
+				},
+			])
+			expect(result.warnings).toEqual(["Failed to persist the MCP config: simulated mcp config write failure"])
+			// The completion writes still ran — the marker is set, so the
+			// terminal wizard does not re-ask despite the partial import.
+			const stored = JSON.parse(readFileSync(configPath, "utf-8")) as { migrationState?: string }
+			expect(stored.migrationState).toBe("done")
+		} finally {
+			failJsonWrite.pattern = ""
+		}
 	})
 
 	it("reports persistence failures as warnings and still returns the per-item results", () => {

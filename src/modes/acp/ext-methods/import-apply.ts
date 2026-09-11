@@ -215,6 +215,7 @@ function applyMcpServers(
 	selected: ImportApplyMcpServerSelection[],
 	discovered: readonly { id: string; mcpServers: Record<string, ServerEntry> }[],
 	mcpPath: string,
+	warnings: string[],
 ): ImportApplyItemResult[] {
 	const byKey = new Map<string, ServerEntry>()
 	for (const app of discovered) {
@@ -237,7 +238,14 @@ function applyMcpServers(
 		// Missing or corrupt — start fresh (same policy as the terminal wizard).
 		existing = {}
 	}
-	const existingServers = (existing.mcpServers ?? {}) as Record<string, ServerEntry>
+	const rawServers = existing.mcpServers
+	// Same shape discipline as the root: a file that parses but carries a
+	// scalar/array mcpServers (hand-edit or partial-write corruption) must
+	// not be object-spread into garbage numeric keys and re-persisted.
+	const existingServers =
+		rawServers !== null && typeof rawServers === "object" && !Array.isArray(rawServers)
+			? (rawServers as Record<string, ServerEntry>)
+			: {}
 
 	const results: ImportApplyItemResult[] = []
 	const toAdd: Record<string, ServerEntry> = {}
@@ -274,7 +282,22 @@ function applyMcpServers(
 		// file (settings, imports, …) is preserved untouched.
 		const merged = { ...toAdd, ...existingServers }
 		existing.mcpServers = merged
-		writeJsonObjectFile(mcpPath, existing)
+		try {
+			writeJsonObjectFile(mcpPath, existing)
+		} catch (err) {
+			// Partial outcomes are reported, not hidden: skills may already be on
+			// disk, so a failed MCP-config write must not reject the call. The
+			// affected items are downgraded from "imported" to "error" (they did
+			// not land) and a top-level warning names the root cause.
+			const reason = `MCP config write failed: ${err instanceof Error ? err.message : String(err)}`
+			for (const r of results) {
+				if (r.kind === "mcpServer" && r.outcome === "imported") {
+					r.outcome = "error"
+					r.reason = reason
+				}
+			}
+			warnings.push(`Failed to persist the MCP config: ${err instanceof Error ? err.message : String(err)}`)
+		}
 	}
 	return results
 }
@@ -327,13 +350,15 @@ export function handleImportApply(deps: ImportApplyDeps, params: Record<string, 
 	const mcpPath = join(deps.agentDir, "mcp.json")
 	const configPath = deps.configPath ?? KIMCHI_CONFIG_PATH
 
+	const warnings: string[] = []
 	const results = [
 		...applySkills(selection.skills, discovered, skillsRoot),
-		...applyMcpServers(selection.mcpServers, discovered, mcpPath),
+		...applyMcpServers(selection.mcpServers, discovered, mcpPath, warnings),
 	]
 
-	const warnings: string[] | undefined = recordFinalWrites(configPath)
-	return warnings === undefined ? { results } : { results, warnings }
+	const persistenceWarnings = recordFinalWrites(configPath)
+	const allWarnings = [...warnings, ...(persistenceWarnings ?? [])]
+	return allWarnings.length > 0 ? { results, warnings: allWarnings } : { results }
 }
 
 /**
