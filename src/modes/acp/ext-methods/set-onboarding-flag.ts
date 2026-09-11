@@ -9,8 +9,11 @@
 // `import_apply`): a user who declines the import never reaches it, but they
 // have still finished onboarding — so completion cannot be a side effect of
 // importing. The flag lands in the shared config's existing `onboarding`
-// namespace via the harness's read-modify-write helper, so a concurrent write
-// cannot clobber neighbouring "user has seen this" markers.
+// namespace via the harness's read-modify-write helper (temp file + atomic
+// rename). Read-modify-write narrows — but does not eliminate — the window in
+// which a concurrent write could clobber neighbouring "user has seen this"
+// markers: there is no lock, so two simultaneous read-modify-write cycles can
+// still lose one update.
 
 import { RequestError } from "@agentclientprotocol/sdk"
 import { writeStudioOnboardingSeenAt } from "../../../config.js"
@@ -37,12 +40,23 @@ export type SetOnboardingFlagPaths = {
  * Params: `{ seenAt?: string }` — optional ISO-8601 timestamp the client saw
  * the user finish onboarding. When omitted, the harness stamps the current
  * time.
+ *
+ * @throws RequestError.invalidParams when `seenAt` is not a valid ISO-8601
+ *   timestamp string.
+ * @throws RequestError.internalError when the config write fails (e.g.
+ *   EACCES, ENOSPC), so the client can tell a persistence failure apart from
+ *   a params rejection.
  */
 export function handleSetOnboardingFlag(
 	paths: SetOnboardingFlagPaths,
 	params: Record<string, unknown> = {},
 ): Record<string, unknown> {
-	writeStudioOnboardingSeenAt(resolveSeenAt(params.seenAt), paths.configPath)
+	try {
+		writeStudioOnboardingSeenAt(resolveSeenAt(params.seenAt), paths.configPath)
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error)
+		throw RequestError.internalError(undefined, `Failed to persist onboarding flag: ${detail}`)
+	}
 	return {}
 }
 

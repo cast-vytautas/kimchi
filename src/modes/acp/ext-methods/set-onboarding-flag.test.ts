@@ -83,4 +83,16 @@ describe("handleSetOnboardingFlag", () => {
 		handleSetOnboardingFlag({ configPath }, { seenAt: "2026-09-11T12:00:00+02:00" })
 		expect(readStudioOnboardingSeenAt(configPath)).toBe("2026-09-11T12:00:00+02:00")
 	})
+
+	// Filesystem failures must reach Studio as an actionable internal error,
+	// not an opaque raw Error (review comment on PR #1182). Deterministic
+	// trigger: a file where the config directory should be, so mkdir fails.
+	it("wraps filesystem write failures in RequestError.internalError", () => {
+		const blockedPath = join(tempDir, "blocker", "config.json")
+		writeFileSync(join(tempDir, "blocker"), "not a directory")
+
+		expect(() => handleSetOnboardingFlag({ configPath: blockedPath }, { seenAt: "2026-09-11T10:00:00.000Z" })).toThrow(
+			/Failed to persist onboarding flag/,
+		)
+	})
 })
