@@ -1,5 +1,5 @@
 // Unit tests for the `_kimchi.dev/set_onboarding_flag` ACP extension method
-// handler (ADR-0043). All writes go through a temp config path so the real
+// handler (kimchi-studio ADR-0043). All writes go through a temp config path so the real
 // shared config is never touched.
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"

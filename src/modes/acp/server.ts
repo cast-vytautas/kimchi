@@ -1055,7 +1055,7 @@ export class KimchiAcpAgent implements Agent {
 			case AVAILABLE_EXT_METHODS.set_onboarding_flag:
 				// Write the shared config per call through the harness's
 				// read-modify-write helper so sibling onboarding keys set by other
-				// Kimchi surfaces survive (ADR-0043).
+				// Kimchi surfaces survive.
 				return handleSetOnboardingFlag({}, params)
 			case AVAILABLE_EXT_METHODS.set_session_title:
 				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)

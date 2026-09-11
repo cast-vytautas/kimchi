@@ -1043,7 +1043,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 		})
 
-		// Sessionless by design (ADR-0043): onboarding completion is global
+		// Sessionless by design (kimchi-studio ADR-0043): onboarding completion is global
 		// per-machine state, so the call carries no sessionId.
 		it("writes the onboarding flag without requiring a session", async () => {
 			vi.mocked(writeStudioOnboardingSeenAt).mockClear()

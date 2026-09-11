@@ -1,7 +1,7 @@
 // ACP extension method handler for marking Studio onboarding complete.
 //
 // Wire name: `_kimchi.dev/set_onboarding_flag` — the vendor-namespaced method
-// for Studio's onboarding flow (ADR-0043), advertised via
+// for Studio's onboarding flow (kimchi-studio ADR-0043), advertised via
 // _meta["kimchi.dev"].set_onboarding_flag. Sessionless on purpose: onboarding
 // completion is global per-machine state, not session-scoped.
 //
