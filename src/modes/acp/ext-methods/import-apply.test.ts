@@ -11,6 +11,9 @@ import { handleImportApply } from "./import-apply.js"
 /** Path fragment that makes cpSync throw; set per-test, empty by default. */
 const failCopy = vi.hoisted(() => ({ pattern: "" }))
 
+/** When true, the completion writes (skillPaths + migration marker) throw. */
+const failConfigWrite = vi.hoisted(() => ({ fail: false }))
+
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>()
 	return {
@@ -18,6 +21,21 @@ vi.mock("node:fs", async (importOriginal) => {
 		cpSync: (src: string, dest: string, opts?: object) => {
 			if (failCopy.pattern && src.includes(failCopy.pattern)) throw new Error("simulated copy failure")
 			return actual.cpSync(src, dest, opts)
+		},
+	}
+})
+
+vi.mock("../../../config.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../../config.js")>()
+	return {
+		...actual,
+		writeSkillPaths: (paths: string[], configPath?: string) => {
+			if (failConfigWrite.fail) throw new Error("simulated config write failure")
+			return actual.writeSkillPaths(paths, configPath)
+		},
+		writeMigrationState: (state: Parameters<typeof actual.writeMigrationState>[0], configPath?: string) => {
+			if (failConfigWrite.fail) throw new Error("simulated config write failure")
+			return actual.writeMigrationState(state, configPath)
 		},
 	}
 })
@@ -197,7 +215,8 @@ describe("import_apply", () => {
 				kind: "skill",
 				sourceAppId: "claude-code",
 				path: gonePath,
-				name: "",
+				// Identified by source app + path; the client already knows the
+				// name from discover, so none is echoed.
 				outcome: "skipped",
 				reason: "not found at apply time",
 			},
@@ -316,6 +335,120 @@ describe("import_apply", () => {
 		expect(mcpConfig.mcpServers["studio-connector"]).toEqual(connectorEntry)
 		expect(mcpConfig.settings).toEqual({ toolPrefix: "server" })
 		expect(mcpConfig.mcpServers.fetch).toEqual({ command: "fetchy" })
+	})
+
+	it("writes mcp.json owner-only (0600) — imported entries carry plaintext credentials", () => {
+		const config = join(tempDir, "claude.json")
+		writeFileSync(
+			config,
+			JSON.stringify({ mcpServers: { fetch: { command: "fetchy", env: { TOKEN: "t" } } } }),
+			"utf-8",
+		)
+
+		apply({ mcpServers: [{ sourceAppId: "claude-code", name: "fetch" }] }, [
+			makeDef({ id: "claude-code", configPaths: [config] }),
+		])
+
+		const mcpJson = join(agentDir, "mcp.json")
+		expect(existsSync(mcpJson)).toBe(true)
+		// Same hardening config.ts applies to config.json (API key, git tokens):
+		// the rename may inherit umask perms, so the mode must be tightened
+		// explicitly.
+		expect(statSync(mcpJson).mode & 0o777).toBe(0o600)
+	})
+
+	it("cannot import an MCP server entry discover would never report (no command and no url)", () => {
+		const config = join(tempDir, "claude.json")
+		writeFileSync(config, JSON.stringify({ mcpServers: { broken: { args: ["--x"] } } }), "utf-8")
+
+		const result = apply({ mcpServers: [{ sourceAppId: "claude-code", name: "broken" }] }, [
+			makeDef({ id: "claude-code", configPaths: [config] }),
+		])
+
+		// import_discover drops this entry, so apply must not accept it by name
+		// either — the two methods agree on what a selectable server is.
+		expect(result.results).toEqual([
+			{
+				kind: "mcpServer",
+				sourceAppId: "claude-code",
+				name: "broken",
+				outcome: "skipped",
+				reason: "not found at apply time",
+			},
+		])
+		expect(existsSync(join(agentDir, "mcp.json"))).toBe(false)
+	})
+
+	it("starts fresh when the existing mcp.json is corrupt, and still imports", () => {
+		const config = join(tempDir, "claude.json")
+		writeFileSync(config, JSON.stringify({ mcpServers: { fetch: { command: "fetchy" } } }), "utf-8")
+		const mcpJson = join(agentDir, "mcp.json")
+		mkdirSync(agentDir, { recursive: true })
+		writeFileSync(mcpJson, "{ not json", "utf-8")
+
+		const result = apply({ mcpServers: [{ sourceAppId: "claude-code", name: "fetch" }] }, [
+			makeDef({ id: "claude-code", configPaths: [config] }),
+		])
+
+		expect(result.results).toEqual([
+			{ kind: "mcpServer", sourceAppId: "claude-code", name: "fetch", outcome: "imported" },
+		])
+		const mcpConfig = JSON.parse(readFileSync(mcpJson, "utf-8")) as { mcpServers: Record<string, ServerEntry> }
+		expect(mcpConfig.mcpServers.fetch).toEqual({ command: "fetchy" })
+	})
+
+	it("reports persistence failures as warnings and still returns the per-item results", () => {
+		const skillsDir = join(tempDir, "claude-skills")
+		writeSkill(skillsDir, "deploy", "name: deploy\ndescription: Ship")
+
+		failConfigWrite.fail = true
+		try {
+			const result = apply({ skills: [{ sourceAppId: "claude-code", path: join(skillsDir, "deploy", "SKILL.md") }] }, [
+				makeDef({ id: "claude-code", skillsDirs: [skillsDir] }),
+			])
+
+			// Partial outcomes are reported, not hidden: the skill landed and the
+			// client hears about it, with a warning naming what could not persist.
+			expect(result.results).toEqual([
+				{
+					kind: "skill",
+					sourceAppId: "claude-code",
+					path: join(skillsDir, "deploy", "SKILL.md"),
+					name: "deploy",
+					outcome: "imported",
+				},
+			])
+			expect(result.warnings).toEqual([
+				"Failed to persist skill paths: simulated config write failure",
+				"Failed to persist the migration marker: simulated config write failure",
+			])
+		} finally {
+			failConfigWrite.fail = false
+		}
+	})
+
+	it("sets the migration marker even when the batch contained an error item", () => {
+		const skillsDir = join(tempDir, "claude-skills")
+		writeSkill(skillsDir, "first", "name: first\ndescription: Lands fine")
+		writeSkill(skillsDir, "second", "name: second\ndescription: Copy explodes")
+
+		failCopy.pattern = "second"
+		try {
+			apply(
+				{
+					skills: [
+						{ sourceAppId: "claude-code", path: join(skillsDir, "first", "SKILL.md") },
+						{ sourceAppId: "claude-code", path: join(skillsDir, "second", "SKILL.md") },
+					],
+				},
+				[makeDef({ id: "claude-code", skillsDirs: [skillsDir] })],
+			)
+
+			const stored = JSON.parse(readFileSync(configPath, "utf-8")) as { migrationState?: string }
+			expect(stored.migrationState).toBe("done")
+		} finally {
+			failCopy.pattern = ""
+		}
 	})
 
 	it("merges stored skill paths instead of replacing them — a hand-added custom path survives", () => {
