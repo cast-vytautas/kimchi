@@ -4,7 +4,7 @@ import { dirname, join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
 import { getVersion } from "./utils.js"
 
-const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
+export const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
 const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
 const KIMCHI_LLM_ENDPOINT = "https://llm.kimchi.dev/openai/v1"
 const DEFAULT_TELEMETRY_LOGS_ENDPOINT = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
