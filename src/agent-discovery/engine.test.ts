@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { hasBearerAuthorizationHeader } from "./engine.js"
-import type { AgentDefinition } from "./index.js"
+import { hasBearerAuthorizationHeader, resolveDirCandidates, selectDirCandidates } from "./engine.js"
 import { discoverAgent } from "./index.js"
+import type { AgentDefinition, DirCandidate } from "./index.js"
 
 describe("discoverAgent engine", () => {
 	let tempDir: string
@@ -374,6 +374,179 @@ describe("discoverAgent engine", () => {
 
 		const result = discoverAgent(def)
 		expect(result.mcpServers.tool).toBeDefined()
+	})
+
+	describe("discoverAgent skill enumeration and root scoping", () => {
+		let tempDir: string
+		let savedCwd: string
+
+		beforeEach(() => {
+			// realpath: on macOS tmpdir() is a /var symlink, and process.cwd() after
+			// chdir reports the /private prefix
+			tempDir = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-engine-skills-")))
+			savedCwd = process.cwd()
+		})
+
+		afterEach(() => {
+			process.chdir(savedCwd)
+			rmSync(tempDir, { recursive: true, force: true })
+		})
+
+		function makeDef(
+			overrides?: Partial<{ configPaths: string[]; skillsDirs: DirCandidate[]; commandsDirs: DirCandidate[] }>,
+		): AgentDefinition {
+			return {
+				id: "test-agent",
+				displayName: "Test Agent",
+				configPaths: overrides?.configPaths ?? [],
+				skillsDirs: overrides?.skillsDirs ?? [],
+				commandsDirs: overrides?.commandsDirs ?? [],
+				extractServerSources: () => [],
+				transformServer: () => undefined,
+			}
+		}
+
+		function writeSkill(skillsDir: string, name: string, frontmatter: string): void {
+			mkdirSync(join(skillsDir, name), { recursive: true })
+			writeFileSync(join(skillsDir, name, "SKILL.md"), `---\n${frontmatter}\n---\nBody.\n`, "utf-8")
+		}
+
+		// S1: invocation name and description come from the skill's frontmatter
+		it("S1: enumerates skills with invocation name and description from frontmatter", () => {
+			const skillsDir = join(tempDir, "skills")
+			writeSkill(skillsDir, "deploy", "name: deploy\ndescription: Ship the service")
+			// No frontmatter name → falls back to the directory name
+			writeSkill(skillsDir, "review", "description: Review the diff")
+
+			const result = discoverAgent(makeDef({ skillsDirs: [skillsDir] }))
+
+			expect(result.skills).toEqual([
+				{ name: "deploy", description: "Ship the service", path: join(skillsDir, "deploy", "SKILL.md") },
+				{ name: "review", description: "Review the diff", path: join(skillsDir, "review", "SKILL.md") },
+			])
+			// skillCount still counts raw subdirectories, unchanged for the wizard
+			expect(result.skillCount).toBe(2)
+		})
+
+		// S2: a skill whose frontmatter cannot be parsed is omitted; the pass continues
+		it("S2: omits a skill whose frontmatter cannot be parsed without failing discovery", () => {
+			const skillsDir = join(tempDir, "skills")
+			writeSkill(skillsDir, "good", "name: good\ndescription: Fine")
+			writeSkill(skillsDir, "broken", "name: [unclosed\ndescription: {{{")
+
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+			const result = discoverAgent(makeDef({ skillsDirs: [skillsDir] }))
+			warnSpy.mockRestore()
+
+			expect(result.skills.map((s) => s.name)).toEqual(["good"])
+		})
+
+		// S3: a skill whose SKILL.md cannot be read is omitted
+		it("S3: omits a skill whose SKILL.md cannot be read", () => {
+			const skillsDir = join(tempDir, "skills")
+			writeSkill(skillsDir, "good", "name: good\ndescription: Fine")
+			// SKILL.md as a directory → readFileSync throws EISDIR
+			mkdirSync(join(skillsDir, "unreadable", "SKILL.md"), { recursive: true })
+
+			const result = discoverAgent(makeDef({ skillsDirs: [skillsDir] }))
+
+			expect(result.skills.map((s) => s.name)).toEqual(["good"])
+		})
+
+		// S4: a source app with no parseable config still reports its skills
+		it("S4: reports skills even when the source app has no parseable config", () => {
+			const config = join(tempDir, "bad.json")
+			writeFileSync(config, "{ not json", "utf-8")
+			const skillsDir = join(tempDir, "skills")
+			writeSkill(skillsDir, "solo", "name: solo\ndescription: Alone")
+
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+			const result = discoverAgent(makeDef({ configPaths: [config], skillsDirs: [skillsDir] }))
+			warnSpy.mockRestore()
+
+			expect(result.mcpServers).toEqual({})
+			expect(result.skills.map((s) => s.name)).toEqual(["solo"])
+		})
+
+		// S5: home scope drops project-relative candidates entirely
+		it("S5: home scope does not report a skill present solely under a project-relative root", () => {
+			const projectSkills = join(tempDir, "project", ".github", "skills")
+			writeSkill(projectSkills, "proj", "name: proj\ndescription: Project-only")
+
+			const def = makeDef({ skillsDirs: [{ projectRelative: join(".github", "skills") }] })
+
+			const homeResult = discoverAgent(def, { scope: "home", cwd: join(tempDir, "project") })
+			expect(homeResult.skills).toEqual([])
+			expect(homeResult.skillCount).toBe(0)
+			expect(homeResult.skillsDir).toBeUndefined()
+
+			// The default (TUI) scope still finds it — behaviour deliberately untouched
+			const allResult = discoverAgent(def, { cwd: join(tempDir, "project") })
+			expect(allResult.skills.map((s) => s.name)).toEqual(["proj"])
+			expect(allResult.skillsDir).toBe(projectSkills)
+		})
+
+		// S6: home scope still reports skills under a home-level root
+		it("S6: home scope reports skills under a home-level root", () => {
+			const homeSkills = join(tempDir, "home", ".claude", "skills")
+			writeSkill(homeSkills, "dep", "name: dep\ndescription: Dep")
+
+			const def = makeDef({
+				skillsDirs: [{ projectRelative: join(".claude", "skills") }, homeSkills],
+			})
+
+			const result = discoverAgent(def, { scope: "home", cwd: tempDir })
+			expect(result.skills.map((s) => s.name)).toEqual(["dep"])
+			expect(result.skillsDir).toBe(homeSkills)
+		})
+
+		// S7: project-relative roots resolve per call against the given cwd — the
+		// prefactor that retires the module-load cwd freeze
+		it("S7: resolves project-relative roots per call, not at module load", () => {
+			const dirA = join(tempDir, "a")
+			const dirB = join(tempDir, "b")
+			mkdirSync(join(dirA, ".warp", "skills", "in-a"), { recursive: true })
+			mkdirSync(join(dirB, ".warp", "skills", "in-b"), { recursive: true })
+
+			const def = makeDef({ skillsDirs: [{ projectRelative: join(".warp", "skills") }] })
+
+			expect(discoverAgent(def, { cwd: dirA }).skillsDir).toBe(join(dirA, ".warp", "skills"))
+			expect(discoverAgent(def, { cwd: dirB }).skillsDir).toBe(join(dirB, ".warp", "skills"))
+
+			// Default cwd is read at call time: the module was loaded under savedCwd,
+			// so a discovery that runs after chdir must see the new directory.
+			process.chdir(dirA)
+			expect(discoverAgent(def).skillsDir).toBe(join(dirA, ".warp", "skills"))
+			process.chdir(dirB)
+			expect(discoverAgent(def).skillsDir).toBe(join(dirB, ".warp", "skills"))
+		})
+
+		// S8: commands directories honour the same scoping
+		it("S8: home scope drops project-relative commands directories", () => {
+			const projectCommands = join(tempDir, "project", ".cursor", "commands")
+			mkdirSync(projectCommands, { recursive: true })
+			writeFileSync(join(projectCommands, "do.md"), "# do", "utf-8")
+
+			const def = makeDef({ commandsDirs: [{ projectRelative: join(".cursor", "commands") }] })
+
+			expect(discoverAgent(def, { scope: "home", cwd: join(tempDir, "project") }).commandsDir).toBeUndefined()
+			expect(discoverAgent(def, { cwd: join(tempDir, "project") }).commandsDir).toBe(projectCommands)
+		})
+
+		describe("resolveDirCandidates / selectDirCandidates", () => {
+			it("resolves plain strings through and project candidates against cwd", () => {
+				expect(resolveDirCandidates([join(tempDir, "x"), { projectRelative: join(".k", "skills") }], "/base")).toEqual([
+					join(tempDir, "x"),
+					join("/base", ".k", "skills"),
+				])
+			})
+
+			it("home scope keeps only string candidates", () => {
+				const candidates: DirCandidate[] = [join(tempDir, "home-dir"), { projectRelative: ".x" }]
+				expect(selectDirCandidates(candidates, "home")).toEqual([join(tempDir, "home-dir")])
+				expect(selectDirCandidates(candidates, "all")).toEqual(candidates)
+			})
+		})
 	})
 
 	describe("hasBearerAuthorizationHeader (defensive)", () => {

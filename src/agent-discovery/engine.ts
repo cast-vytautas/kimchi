@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { isAbsolute, join } from "node:path"
+import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import type { ServerEntry } from "../extensions/mcp-adapter/types.js"
-import type { AgentDefinition, AgentDiscovery } from "./index.js"
+import type { AgentDefinition, AgentDiscovery, DirCandidate, DiscoveredSkill } from "./index.js"
 
 function msg(err: unknown): string {
 	return err instanceof Error ? err.message : String(err)
@@ -46,7 +48,58 @@ function ingest(
 	}
 }
 
-export function discoverAgent(def: AgentDefinition): AgentDiscovery {
+export type DiscoveryScope = "all" | "home"
+
+export interface DiscoverAgentOptions {
+	/**
+	 * `"home"` restricts discovery to home-level roots by dropping
+	 * project-relative candidates entirely. Used by the ACP import_discover
+	 * handler: onboarding runs before any workspace exists, and a harness
+	 * spawned by a desktop app inherits a working directory (often `/`) that
+	 * would make project-relative probes meaningless and risk an OS permission
+	 * prompt. Defaults to `"all"`, which preserves the terminal wizard's
+	 * behaviour unchanged.
+	 */
+	readonly scope?: DiscoveryScope
+	/**
+	 * Working directory project-relative candidates resolve against. Defaults
+	 * to `process.cwd()` — read at call time, never at module load, so a
+	 * long-lived process sees the caller's current directory.
+	 */
+	readonly cwd?: string
+}
+
+/** Resolve a candidate list to absolute directories against the given cwd. */
+export function resolveDirCandidates(candidates: readonly DirCandidate[], cwd: string): string[] {
+	return candidates.map((c) => (typeof c === "string" ? c : join(cwd, c.projectRelative)))
+}
+
+/** Drop project-relative candidates when discovery is scoped to home roots. */
+export function selectDirCandidates(
+	candidates: readonly DirCandidate[],
+	scope: DiscoveryScope,
+): readonly DirCandidate[] {
+	return scope === "home" ? candidates.filter((c) => typeof c === "string") : candidates
+}
+
+/**
+ * Enumerate the skills in a resolved skills directory via pi's loader, which
+ * omits a skill whose SKILL.md cannot be read or parsed (emitting a diagnostic)
+ * instead of failing the whole pass.
+ */
+function enumerateSkills(skillsDir: string): DiscoveredSkill[] {
+	try {
+		const { skills } = loadSkillsFromDir({ dir: skillsDir, source: skillsDir })
+		return skills.map((s) => ({ name: s.name, description: s.description, path: s.filePath }))
+	} catch (err) {
+		console.warn(`Failed to enumerate skills in ${skillsDir}: ${msg(err)}`)
+		return []
+	}
+}
+
+export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptions): AgentDiscovery {
+	const scope = options?.scope ?? "all"
+	const cwd = options?.cwd ?? process.cwd()
 	const parse = def.parseConfig ?? JSON.parse
 	const mcpServers: Record<string, ServerEntry> = {}
 
@@ -75,9 +128,11 @@ export function discoverAgent(def: AgentDefinition): AgentDiscovery {
 		// file in configPaths is kept and later files' duplicates are skipped.
 	}
 
+	const skillsDirs = resolveDirCandidates(selectDirCandidates(def.skillsDirs, scope), cwd)
 	let skillCount = 0
+	let skills: DiscoveredSkill[] = []
 	let skillsDir: string | undefined
-	for (const dir of def.skillsDirs) {
+	for (const dir of skillsDirs) {
 		if (existsSync(dir)) {
 			skillsDir = dir
 			try {
@@ -85,13 +140,15 @@ export function discoverAgent(def: AgentDefinition): AgentDiscovery {
 			} catch (err) {
 				console.warn(`Failed to read ${def.displayName} skills directory at ${dir}: ${msg(err)}`)
 			}
+			skills = enumerateSkills(dir)
 			break
 		}
 	}
 
+	const commandsDirs = resolveDirCandidates(selectDirCandidates(def.commandsDirs, scope), cwd)
 	let commandsCount = 0
 	let commandsDir: string | undefined
-	for (const dir of def.commandsDirs) {
+	for (const dir of commandsDirs) {
 		if (existsSync(dir)) {
 			commandsDir = dir
 			try {
@@ -103,7 +160,16 @@ export function discoverAgent(def: AgentDefinition): AgentDiscovery {
 		}
 	}
 
-	return { id: def.id, displayName: def.displayName, mcpServers, skillCount, skillsDir, commandsCount, commandsDir }
+	return {
+		id: def.id,
+		displayName: def.displayName,
+		mcpServers,
+		skillCount,
+		skills,
+		skillsDir,
+		commandsCount,
+		commandsDir,
+	}
 }
 
 function countMarkdownFiles(dir: string): number {

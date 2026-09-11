@@ -105,6 +105,7 @@ import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
+import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
@@ -1069,6 +1070,12 @@ export class KimchiAcpAgent implements Agent {
 					const turnActive = entry.turn !== undefined && !entry.turn.cancelled
 					return { session: entry.session, turnActive }
 				}, params)
+			case AVAILABLE_EXT_METHODS.import_discover:
+				// Sessionless, read-only source-app discovery for the import screen
+				// (ADR-0043/ADR-0044): nothing is written to disk and no session is
+				// touched. Spread: the payload is a plain JSON object and the
+				// extMethod contract wants a string-indexed record.
+				return { ...importDiscover() }
 			default:
 				throw RequestError.methodNotFound(method)
 		}
