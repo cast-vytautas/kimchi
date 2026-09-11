@@ -1073,9 +1073,10 @@ export class KimchiAcpAgent implements Agent {
 			case AVAILABLE_EXT_METHODS.import_discover:
 				// Sessionless, read-only source-app discovery for the import screen
 				// (ADR-0043/ADR-0044): nothing is written to disk and no session is
-				// touched. Spread: the payload is a plain JSON object and the
-				// extMethod contract wants a string-indexed record.
-				return { ...importDiscover() }
+				// touched. ImportDiscoverResult is a type alias, so it is directly
+				// assignable to the string-indexed record the extMethod contract
+				// wants — no cast, no spread.
+				return importDiscover()
 			default:
 				throw RequestError.methodNotFound(method)
 		}

@@ -152,7 +152,14 @@ describe("import_discover", () => {
 		const config = join(tempDir, "config.json")
 		writeFileSync(
 			config,
-			JSON.stringify({ mcpServers: { broken: { args: ["--x"] }, good: { command: "cmd" } } }),
+			JSON.stringify({
+				mcpServers: {
+					broken: { args: ["--x"] },
+					emptyCommand: { command: "" },
+					emptyUrl: { url: "" },
+					good: { command: "cmd" },
+				},
+			}),
 			"utf-8",
 		)
 		const onlyBroken = join(tempDir, "only-broken.json")
@@ -163,7 +170,8 @@ describe("import_discover", () => {
 			makeDef({ id: "only-broken", displayName: "Only Broken", configPaths: [onlyBroken] }),
 		])
 
-		// The name-only row is dropped — a client could not act on it
+		// The name-only and empty-string rows are dropped — a client could not
+		// act on any of them
 		expect(result.apps.map((a) => a.id)).toEqual(["mixed"])
 		expect(result.apps[0].mcpServers).toEqual([
 			{ name: "good", command: "cmd", sourceAppId: "mixed", sourceAppName: "Mixed" },

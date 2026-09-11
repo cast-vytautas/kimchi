@@ -62,7 +62,12 @@ export interface ImportDiscoverSourceApp {
 	mcpServers: ImportDiscoverMcpServer[]
 }
 
-export interface ImportDiscoverResult {
+/**
+ * Type alias (not an interface) on purpose: object literal types get an
+ * implicit index signature, so the extMethod handler can return it directly
+ * as `Record<string, unknown>` without a cast or a spread.
+ */
+export type ImportDiscoverResult = {
 	apps: ImportDiscoverSourceApp[]
 }
 
@@ -94,10 +99,13 @@ function toImportDiscoverMcpServer(
 	sourceAppId: string,
 	sourceAppName: string,
 ): ImportDiscoverMcpServer | undefined {
-	if (entry.command === undefined && entry.url === undefined) return undefined
+	// Falsy, not undefined: an empty-string command or URL is just as
+	// unactionable as an absent one, so junk values from source configs are
+	// treated the same as missing ones.
+	if (!entry.command && !entry.url) return undefined
 	const server: ImportDiscoverMcpServer = { name, sourceAppId, sourceAppName }
-	if (entry.command !== undefined) server.command = entry.command
-	if (entry.url !== undefined) server.url = redactUrl(entry.url)
+	if (entry.command) server.command = entry.command
+	if (entry.url) server.url = redactUrl(entry.url)
 	return server
 }
 
