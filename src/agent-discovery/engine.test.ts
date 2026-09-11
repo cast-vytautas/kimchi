@@ -4,8 +4,8 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ServerEntry } from "../extensions/mcp-adapter/types.js"
 import { hasBearerAuthorizationHeader, resolveDirCandidates, selectDirCandidates } from "./engine.js"
-import { discoverAgent } from "./index.js"
 import type { AgentDefinition, DirCandidate } from "./index.js"
+import { discoverAgent } from "./index.js"
 
 describe("discoverAgent engine", () => {
 	let tempDir: string
@@ -551,6 +551,32 @@ describe("discoverAgent engine", () => {
 			expect(discoverAgent(def, { cwd: join(tempDir, "project") }).commandsDir).toBe(projectCommands)
 		})
 
+		// S8c: symmetric with the configPaths guard — a non-absolute plain-string
+		// skills/commands candidate is dropped under home scope, not probed
+		// against the ambient cwd
+		it("S8c: home scope drops non-absolute plain-string dir candidates instead of probing ambient cwd", () => {
+			mkdirSync(join(tempDir, "relative-skills", "alpha"), { recursive: true })
+			mkdirSync(join(tempDir, "relative-commands"), { recursive: true })
+			writeFileSync(join(tempDir, "relative-commands", "do.md"), "# do", "utf-8")
+			const def = makeDef({ skillsDirs: ["relative-skills"], commandsDirs: ["relative-commands"] })
+
+			const savedCwd = process.cwd()
+			process.chdir(tempDir)
+			try {
+				const home = discoverAgent(def, { scope: "home" })
+				expect(home.skillsDir).toBeUndefined()
+				expect(home.commandsDir).toBeUndefined()
+				// The default (wizard) scope still probes them: relative strings pass
+				// through raw and are resolved against the ambient cwd inside
+				// existsSync (resolveDirCandidates warns about this)
+				const all = discoverAgent(def, { scope: "all", cwd: tempDir })
+				expect(all.skillsDir).toBe("relative-skills")
+				expect(all.commandsDir).toBe("relative-commands")
+			} finally {
+				process.chdir(savedCwd)
+			}
+		})
+
 		// S8b: configPaths are home-level absolute by contract — under home scope a
 		// relative entry must be skipped, not probed against the ambient cwd.
 		it("S8b: home scope skips a non-absolute config path instead of probing it against the ambient cwd", () => {
@@ -616,8 +642,11 @@ describe("discoverAgent engine", () => {
 				}
 			})
 
-			it("home scope keeps only string candidates", () => {
-				const candidates: DirCandidate[] = [join(tempDir, "home-dir"), { projectRelative: ".x" }]
+			it("home scope keeps only absolute string candidates", () => {
+				const candidates: DirCandidate[] = [join(tempDir, "home-dir"), "relative/dir", { projectRelative: ".x" }]
+				// Symmetric with the configPaths guard: a non-absolute plain string
+				// would be probed against the ambient cwd, so home scope drops it
+				// instead of merely warning.
 				expect(selectDirCandidates(candidates, "home")).toEqual([join(tempDir, "home-dir")])
 				expect(selectDirCandidates(candidates, "all")).toEqual(candidates)
 			})

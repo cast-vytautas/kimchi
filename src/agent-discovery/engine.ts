@@ -52,11 +52,11 @@ export type DiscoveryScope = "all" | "home"
 
 export interface DiscoverAgentOptions {
 	/**
-	 * `"home"` restricts discovery to home-level roots by dropping
-	 * project-relative candidates entirely. Used by the ACP import_discover
-	 * handler: onboarding runs before any workspace exists, and a harness
-	 * spawned by a desktop app inherits a working directory (often `/`) that
-	 * would make project-relative probes meaningless and risk an OS permission
+	 * `"home"` restricts discovery to home-level roots by dropping project-relative
+	 * candidates and non-absolute plain-string candidates entirely. Used by the ACP
+	 * import_discover handler: onboarding runs before any workspace exists, and a
+	 * harness spawned by a desktop app inherits a working directory (often `/`) that
+	 * would make cwd-dependent probes meaningless and risk an OS permission
 	 * prompt. Defaults to `"all"`, which preserves the terminal wizard's
 	 * behaviour unchanged.
 	 */
@@ -87,12 +87,18 @@ export function resolveDirCandidates(candidates: readonly DirCandidate[], cwd: s
 	})
 }
 
-/** Drop project-relative candidates when discovery is scoped to home roots. */
+/**
+ * Drop candidates that home scope must not probe: project-relative candidates
+ * (meaningless without a workspace) and non-absolute plain strings (which
+ * would resolve against the ambient cwd inside existsSync — exactly the
+ * cwd-dependent probe home scope exists to prevent). Relative strings remain
+ * allowed under "all" scope, where resolveDirCandidates warns on them.
+ */
 export function selectDirCandidates(
 	candidates: readonly DirCandidate[],
 	scope: DiscoveryScope,
 ): readonly DirCandidate[] {
-	return scope === "home" ? candidates.filter((c) => typeof c === "string") : candidates
+	return scope === "home" ? candidates.filter((c) => typeof c === "string" && isAbsolute(c)) : candidates
 }
 
 /**

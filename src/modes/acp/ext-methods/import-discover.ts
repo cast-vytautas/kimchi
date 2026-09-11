@@ -1,5 +1,5 @@
-import { AGENT_DEFINITIONS, discoverAgent } from "../../../agent-discovery/index.js"
 import type { AgentDefinition } from "../../../agent-discovery/index.js"
+import { AGENT_DEFINITIONS, discoverAgent } from "../../../agent-discovery/index.js"
 import type { ServerEntry } from "../../../extensions/mcp-adapter/types.js"
 
 /**
