@@ -376,6 +376,29 @@ describe("import_apply", () => {
 				reason: "not found at apply time",
 			},
 		])
+	expect(existsSync(join(agentDir, "mcp.json"))).toBe(false)
+	})
+
+	it("cannot import an MCP server whose command/url are empty strings — the same falsy rule as discover", () => {
+		const config = join(tempDir, "claude.json")
+		writeFileSync(config, JSON.stringify({ mcpServers: { empty: { command: "" }, blank: { url: "" } } }), "utf-8")
+
+		const result = apply(
+			{
+				mcpServers: [
+					{ sourceAppId: "claude-code", name: "empty" },
+					{ sourceAppId: "claude-code", name: "blank" },
+				],
+			},
+			[makeDef({ id: "claude-code", configPaths: [config] })],
+		)
+
+		// import_discover treats an empty-string command/url as just as
+		// unactionable as an absent one (falsy check), so apply must too.
+		expect(result.results).toEqual([
+			{ kind: "mcpServer", sourceAppId: "claude-code", name: "empty", outcome: "skipped", reason: "not found at apply time" },
+			{ kind: "mcpServer", sourceAppId: "claude-code", name: "blank", outcome: "skipped", reason: "not found at apply time" },
+		])
 		expect(existsSync(join(agentDir, "mcp.json"))).toBe(false)
 	})
 

@@ -53,11 +53,6 @@ export interface ImportApplyMcpServerSelection {
 	name: string
 }
 
-export interface ImportApplyParams {
-	skills?: ImportApplySkillSelection[]
-	mcpServers?: ImportApplyMcpServerSelection[]
-}
-
 export type ImportApplyOutcome = "imported" | "skipped" | "error"
 
 /** Per-item result so the client can report exactly what landed and what did not. */
@@ -224,11 +219,12 @@ function applyMcpServers(
 	const byKey = new Map<string, ServerEntry>()
 	for (const app of discovered) {
 		for (const [name, entry] of Object.entries(app.mcpServers)) {
-			// Same filter as import_discover's toImportDiscoverMcpServer: an
-			// entry with neither command nor url is never reported by discovery
-			// and must not be importable by identity either, so the two methods
-			// agree on what a selectable server is.
-			if (entry.command === undefined && entry.url === undefined) continue
+			// Same filter as import_discover's toImportDiscoverMcpServer — falsy,
+			// so an empty-string command/url is just as unactionable as an absent
+			// one: such entries are never reported by discovery and must not be
+			// importable by identity either, so the two methods agree on what a
+			// selectable server is.
+			if (!entry.command && !entry.url) continue
 			byKey.set(`${app.id}\u0000${name}`, entry)
 		}
 	}

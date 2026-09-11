@@ -510,9 +510,10 @@ export function writeJsonObjectFile(path: string, value: Record<string, unknown>
 	const tmp = `${path}.${process.pid}.tmp`
 	writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
 	renameSync(tmp, path)
-	// Restrict to owner-only (0600) — config.json holds the Cast AI API key and
-	// git tokens in plaintext. The atomic rename may inherit the tmp file's
-	// default umask perms, so chmod explicitly after the rename lands.
+	// Restrict to owner-only (0600) — every caller writes a file that holds
+	// plaintext credentials or user state, and the atomic rename may inherit
+	// the tmp file's default umask perms, so chmod explicitly after the rename
+	// lands.
 	chmodSync(path, 0o600)
 }
 
