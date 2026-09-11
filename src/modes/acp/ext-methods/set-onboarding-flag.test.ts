@@ -5,9 +5,20 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { RequestError } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { readStudioOnboardingSeenAt } from "../../../config.js"
 import { handleSetOnboardingFlag } from "./set-onboarding-flag.js"
+
+/** Runs fn, returns the thrown RequestError, or fails the test if nothing threw. */
+function thrownRequestError(fn: () => void): RequestError {
+	try {
+		fn()
+	} catch (error) {
+		return error as RequestError
+	}
+	throw new Error("expected the call to throw a RequestError")
+}
 
 describe("handleSetOnboardingFlag", () => {
 	let tempDir: string
@@ -74,7 +85,10 @@ describe("handleSetOnboardingFlag", () => {
 	})
 
 	it.each([42, null, "", "not-a-date", "September 11, 2026"])("rejects invalid seenAt (%s)", (seenAt) => {
-		expect(() => handleSetOnboardingFlag({ configPath }, { seenAt })).toThrow(/seenAt must be an ISO-8601/)
+		// Assert the JSON-RPC error code (-32602) explicitly: resolveSeenAt sits
+		// outside the write try/catch precisely so invalid params are never
+		// re-wrapped as internalError (-32603).
+		expect(thrownRequestError(() => handleSetOnboardingFlag({ configPath }, { seenAt })).code).toBe(-32602)
 		// A rejected write must not leave a flag behind.
 		expect(readStudioOnboardingSeenAt(configPath)).toBeUndefined()
 	})
@@ -94,5 +108,12 @@ describe("handleSetOnboardingFlag", () => {
 		expect(() => handleSetOnboardingFlag({ configPath: blockedPath }, { seenAt: "2026-09-11T10:00:00.000Z" })).toThrow(
 			/Failed to persist onboarding flag/,
 		)
+		// Write failures are internal errors (-32603), distinct from the
+		// invalidParams (-32602) rejection for bad seenAt.
+		expect(
+			thrownRequestError(() =>
+				handleSetOnboardingFlag({ configPath: blockedPath }, { seenAt: "2026-09-11T10:00:00.000Z" }),
+			).code,
+		).toBe(-32603)
 	})
 })

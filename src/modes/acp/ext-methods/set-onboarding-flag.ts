@@ -51,8 +51,11 @@ export function handleSetOnboardingFlag(
 	paths: SetOnboardingFlagPaths,
 	params: Record<string, unknown> = {},
 ): Record<string, unknown> {
+	// Resolved outside the try/catch on purpose: invalidParams must surface as
+	// -32602, not be re-wrapped into the write-failure internalError below.
+	const seenAt = resolveSeenAt(params.seenAt)
 	try {
-		writeStudioOnboardingSeenAt(resolveSeenAt(params.seenAt), paths.configPath)
+		writeStudioOnboardingSeenAt(seenAt, paths.configPath)
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error)
 		throw RequestError.internalError(undefined, `Failed to persist onboarding flag: ${detail}`)
