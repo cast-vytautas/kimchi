@@ -13,6 +13,7 @@ import {
 	readApiKeyFromConfigFile,
 	readGitToken,
 	readHideTips,
+	readStudioOnboardingSeenAt,
 	readTelemetryConfig,
 	readTeleportCompactHintEnabled,
 	upgradeLegacyRetrySettings,
@@ -21,6 +22,7 @@ import {
 	writeGitToken,
 	writeHideTips,
 	writeSessionModeWizardSeenAt,
+	writeStudioOnboardingSeenAt,
 	writeTeleportCompactHintEnabled,
 } from "./config.js"
 
@@ -542,6 +544,49 @@ describe("writeSessionModeWizardSeenAt", () => {
 			onboarding: {
 				otherWizardSeenAt: "2026-05-18T10:00:00.000Z",
 				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+			},
+		})
+	})
+})
+
+describe("readStudioOnboardingSeenAt / writeStudioOnboardingSeenAt", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("round-trips onboarding.studioOnboardingSeenAt", () => {
+		expect(readStudioOnboardingSeenAt(configPath)).toBeUndefined()
+
+		writeStudioOnboardingSeenAt("2026-09-11T10:00:00.000Z", configPath)
+		expect(readStudioOnboardingSeenAt(configPath)).toBe("2026-09-11T10:00:00.000Z")
+	})
+
+	it("preserves unrelated fields and existing onboarding fields", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "key",
+				onboarding: { sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z", otherMarker: true },
+			}),
+		)
+
+		writeStudioOnboardingSeenAt("2026-09-11T10:00:00.000Z", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+
+		expect(raw).toEqual({
+			apiKey: "key",
+			onboarding: {
+				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+				otherMarker: true,
+				studioOnboardingSeenAt: "2026-09-11T10:00:00.000Z",
 			},
 		})
 	})

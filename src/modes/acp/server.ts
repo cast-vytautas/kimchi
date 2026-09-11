@@ -106,6 +106,7 @@ import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from
 import { AVAILABLE_COMMANDS } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
+import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { handleSteering } from "./ext-methods/steering.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
@@ -1051,6 +1052,11 @@ export class KimchiAcpAgent implements Agent {
 					authPath: join(this.agentDir, "auth.json"),
 					modelsPath: join(this.agentDir, "models.json"),
 				})
+			case AVAILABLE_EXT_METHODS.set_onboarding_flag:
+				// Write the shared config per call through the harness's
+				// read-modify-write helper so sibling onboarding keys set by other
+				// Kimchi surfaces survive.
+				return handleSetOnboardingFlag({}, params)
 			case AVAILABLE_EXT_METHODS.set_session_title:
 				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
 			case AVAILABLE_EXT_METHODS.steering:
