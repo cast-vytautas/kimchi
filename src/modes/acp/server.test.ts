@@ -62,6 +62,23 @@ vi.mock("../../utils.js", async (importOriginal) => {
 		getVersion: () => getVersionMock(),
 	}
 })
+// Hermetic stub for import_discover: real discovery would read the
+// developer's actual home directory (~/.claude.json, ~/.cursor/mcp.json, …)
+// during a unit test. Only the extMethod dispatch path consumes this module.
+vi.mock("./ext-methods/import-discover.js", () => ({
+	importDiscover: vi.fn(() => ({
+		apps: [
+			{
+				id: "stub-app",
+				displayName: "Stub App",
+				skills: [
+					{ name: "stub-skill", description: "d", path: "/tmp/s", sourceAppId: "stub-app", sourceAppName: "Stub App" },
+				],
+				mcpServers: [{ name: "stub-mcp", command: "mcp", sourceAppId: "stub-app", sourceAppName: "Stub App" }],
+			},
+		],
+	})),
+}))
 
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
@@ -8388,5 +8405,38 @@ describe("resolveAcpAppendSystemPrompt", () => {
 		expect(resolveAcpAppendSystemPrompt({ _meta: "nope" }, noOptions)).toBeUndefined()
 		expect(resolveAcpAppendSystemPrompt({ _meta: { "kimchi.dev": "nope" } }, noOptions)).toBeUndefined()
 		expect(resolveAcpAppendSystemPrompt({ _meta: null }, noOptions)).toBeUndefined()
+	})
+})
+
+describe("extMethod dispatch", () => {
+	it("dispatches the sessionless import_discover method and returns its payload", async () => {
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+
+		const result = (await agent.extMethod(AVAILABLE_EXT_METHODS.import_discover, {})) as {
+			apps: Array<{ id: string; displayName: string; skills: Array<{ name: string }>; mcpServers: unknown[] }>
+		}
+
+		expect(result.apps).toEqual([
+			{
+				id: "stub-app",
+				displayName: "Stub App",
+				skills: [
+					{ name: "stub-skill", description: "d", path: "/tmp/s", sourceAppId: "stub-app", sourceAppName: "Stub App" },
+				],
+				mcpServers: [{ name: "stub-mcp", command: "mcp", sourceAppId: "stub-app", sourceAppName: "Stub App" }],
+			},
+		])
+	})
+
+	it("rejects unknown extension methods as method-not-found", async () => {
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+		})
+
+		await expect(agent.extMethod("_kimchi.dev/import_apply", {})).rejects.toThrow(/Method not found/)
 	})
 })
