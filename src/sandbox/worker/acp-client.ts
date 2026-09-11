@@ -76,6 +76,8 @@ export interface AcpSessionCallbacks {
 		title?: string
 		/** Tool arguments (ACP rawInput) — present on in_progress notifications. */
 		rawInput?: unknown
+		/** Structured tool result (ACP rawOutput — the pi AgentToolResult). */
+		rawOutput?: unknown
 	}) => void
 	/** Called at the end of each ACP turn with the cumulative turn count. */
 	onTurnEnd?: (turnCount: number) => void
@@ -661,7 +663,7 @@ export class AcpSessionClient {
 					this._toolCallTitles.set(update.toolCallId, update.title)
 				}
 				const title = update.title ?? this._toolCallTitles.get(update.toolCallId)
-				this._dispatchToolActivity(cb, update.status, update.toolCallId, title, update.rawInput)
+				this._dispatchToolActivity(cb, update.status, update.toolCallId, title, update.rawInput, update.rawOutput)
 				break
 			}
 			case "usage_update": {
@@ -686,6 +688,7 @@ export class AcpSessionClient {
 		toolCallId: string,
 		title: string | undefined,
 		rawInput?: unknown,
+		rawOutput?: unknown,
 	): void {
 		// pending = model is still streaming the args — nothing is executing yet.
 		if (!status || status === "pending") return
@@ -701,6 +704,7 @@ export class AcpSessionClient {
 			status,
 			title,
 			...(rawInput != null ? { rawInput } : {}),
+			...(rawOutput != null ? { rawOutput } : {}),
 		})
 		// completed/failed clears the title cache entry.
 		if (status !== "in_progress") this._toolCallTitles.delete(toolCallId)
