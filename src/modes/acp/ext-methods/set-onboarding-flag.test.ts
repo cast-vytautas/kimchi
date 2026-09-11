@@ -73,14 +73,14 @@ describe("handleSetOnboardingFlag", () => {
 		expect(readStudioOnboardingSeenAt(configPath)).toBe("2026-09-11T10:00:00.000Z")
 	})
 
-	it.each([42, null, "", "not-a-date"])("rejects invalid seenAt (%s)", (seenAt) => {
+	it.each([42, null, "", "not-a-date", "September 11, 2026"])("rejects invalid seenAt (%s)", (seenAt) => {
 		expect(() => handleSetOnboardingFlag({ configPath }, { seenAt })).toThrow(/seenAt must be an ISO-8601/)
 		// A rejected write must not leave a flag behind.
 		expect(readStudioOnboardingSeenAt(configPath)).toBeUndefined()
 	})
 
-	it("accepts a non-ISO but parseable date string", () => {
-		handleSetOnboardingFlag({ configPath }, { seenAt: "September 11, 2026" })
-		expect(readStudioOnboardingSeenAt(configPath)).toBe("September 11, 2026")
+	it("accepts an ISO-8601 timestamp with a numeric offset", () => {
+		handleSetOnboardingFlag({ configPath }, { seenAt: "2026-09-11T12:00:00+02:00" })
+		expect(readStudioOnboardingSeenAt(configPath)).toBe("2026-09-11T12:00:00+02:00")
 	})
 })

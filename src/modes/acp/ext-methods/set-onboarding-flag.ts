@@ -46,9 +46,21 @@ export function handleSetOnboardingFlag(
 	return {}
 }
 
+// ISO-8601 date-time with a UTC designator or numeric offset. Deliberately
+// strict: the value is a shared contract with Studio and any future reader of
+// the config, so arbitrary parseable strings (e.g. "September 11, 2026") are
+// rejected — Date.parse's handling of non-ISO input is engine-specific and
+// would persist non-machine-standard strings into the shared config.
+const ISO_8601_TIMESTAMP = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:?\d{2})$/
+
 function resolveSeenAt(seenAt: unknown): string {
 	if (seenAt === undefined) return new Date().toISOString()
-	if (typeof seenAt !== "string" || seenAt.length === 0 || Number.isNaN(Date.parse(seenAt))) {
+	if (
+		typeof seenAt !== "string" ||
+		seenAt.length === 0 ||
+		!ISO_8601_TIMESTAMP.test(seenAt) ||
+		Number.isNaN(Date.parse(seenAt))
+	) {
 		throw RequestError.invalidParams(undefined, "seenAt must be an ISO-8601 timestamp string")
 	}
 	return seenAt
