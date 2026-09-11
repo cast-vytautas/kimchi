@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 import { RequestError } from "@agentclientprotocol/sdk"
 import {
@@ -7,7 +7,13 @@ import {
 	type DiscoveredSkill,
 	discoverAgent,
 } from "../../../agent-discovery/index.js"
-import { ALWAYS_SHOWN_SKILL_PATHS, KIMCHI_CONFIG_PATH, writeMigrationState, writeSkillPaths } from "../../../config.js"
+import {
+	ALWAYS_SHOWN_SKILL_PATHS,
+	KIMCHI_CONFIG_PATH,
+	writeJsonObjectFile,
+	writeMigrationState,
+	writeSkillPaths,
+} from "../../../config.js"
 import type { ServerEntry } from "../../../extensions/mcp-adapter/types.js"
 import { toSkillName } from "../../../setup-wizard.js"
 
@@ -58,8 +64,8 @@ export type ImportApplyOutcome = "imported" | "skipped" | "error"
 export interface ImportApplyItemResult {
 	kind: "skill" | "mcpServer"
 	sourceAppId: string
-	/** Skill invocation name, or MCP server name. */
-	name: string
+	/** Skill invocation name, or MCP server name. Omitted when the item could not be resolved to a name at apply time. */
+	name?: string
 	/** Absolute SKILL.md path of the selected item (skills only). */
 	path?: string
 	outcome: ImportApplyOutcome
@@ -69,6 +75,8 @@ export interface ImportApplyItemResult {
 
 export interface ImportApplyResult {
 	results: ImportApplyItemResult[]
+	/** Non-fatal persistence problems (e.g. the config write failed after items landed). */
+	warnings?: string[]
 }
 
 export interface ImportApplyDeps {
@@ -92,15 +100,13 @@ function invalidParams(detail: string): never {
 	throw RequestError.invalidParams(undefined, `import_apply: ${detail}`)
 }
 
-function asStringArray(value: unknown, what: string): string[] {
-	if (!Array.isArray(value)) invalidParams(`${what} must be an array of strings`)
-	return value.map((v) => {
-		if (typeof v !== "string") invalidParams(`${what} must contain only strings`)
-		return v
-	})
+/** Validated selection; both arrays are always present (possibly empty). */
+interface ParsedSelections {
+	skills: ImportApplySkillSelection[]
+	mcpServers: ImportApplyMcpServerSelection[]
 }
 
-function parseParams(params: Record<string, unknown>): ImportApplyParams {
+function parseParams(params: Record<string, unknown>): ParsedSelections {
 	if (params === null || typeof params !== "object" || Array.isArray(params)) {
 		invalidParams("params must be an object")
 	}
@@ -157,11 +163,12 @@ function applySkills(
 	for (const sel of selected) {
 		const skill = byKey.get(`${sel.sourceAppId}\u0000${sel.path}`)
 		if (!skill) {
+			// Resolved only by identity (source app + SKILL.md path); the client
+			// already knows the name from discover, so none is echoed here.
 			results.push({
 				kind: "skill",
 				sourceAppId: sel.sourceAppId,
 				path: sel.path,
-				name: "",
 				outcome: "skipped",
 				reason: "not found at apply time",
 			})
@@ -217,6 +224,11 @@ function applyMcpServers(
 	const byKey = new Map<string, ServerEntry>()
 	for (const app of discovered) {
 		for (const [name, entry] of Object.entries(app.mcpServers)) {
+			// Same filter as import_discover's toImportDiscoverMcpServer: an
+			// entry with neither command nor url is never reported by discovery
+			// and must not be importable by identity either, so the two methods
+			// agree on what a selectable server is.
+			if (entry.command === undefined && entry.url === undefined) continue
 			byKey.set(`${app.id}\u0000${name}`, entry)
 		}
 	}
@@ -262,14 +274,11 @@ function applyMcpServers(
 	}
 
 	if (Object.keys(toAdd).length > 0) {
-		mkdirSync(dirname(mcpPath), { recursive: true })
 		// Rewrite only the mcpServers map; every other top-level key in the
 		// file (settings, imports, …) is preserved untouched.
 		const merged = { ...toAdd, ...existingServers }
 		existing.mcpServers = merged
-		const tmp = `${mcpPath}.${process.pid}.tmp`
-		writeFileSync(tmp, `${JSON.stringify(existing, null, 2)}\n`, "utf-8")
-		renameSync(tmp, mcpPath)
+		writeJsonObjectFile(mcpPath, existing)
 	}
 	return results
 }
@@ -284,7 +293,11 @@ function mergeSkillPaths(configPath: string): string[] {
 	let stored: string[] = []
 	try {
 		const parsed = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>
-		if (Array.isArray(parsed.skillPaths)) stored = asStringArray(parsed.skillPaths, "skillPaths")
+		// Server-side data, not client params: non-string entries are dropped
+		// rather than surfacing as an invalidParams error to the client.
+		if (Array.isArray(parsed.skillPaths)) {
+			stored = parsed.skillPaths.filter((p): p is string => typeof p === "string")
+		}
 	} catch {
 		// No config yet — first run; nothing to preserve.
 	}
@@ -302,6 +315,10 @@ function mergeSkillPaths(configPath: string): string[] {
  * Perform the import for a client-supplied selection. Completing the call
  * satisfies the migration marker — even when items were skipped or failed —
  * so a user who imported in one surface is not re-interrogated in the other.
+ *
+ * Partial outcomes are reported, not hidden: if the final config writes fail
+ * (EACCES, disk full) the per-item results still come back, with a top-level
+ * `warnings` entry naming what could not be persisted.
  */
 export function handleImportApply(deps: ImportApplyDeps, params: Record<string, unknown>): ImportApplyResult {
 	const selection = parseParams(params)
@@ -315,12 +332,31 @@ export function handleImportApply(deps: ImportApplyDeps, params: Record<string, 
 	const configPath = deps.configPath ?? KIMCHI_CONFIG_PATH
 
 	const results = [
-		...applySkills(selection.skills ?? [], discovered, skillsRoot),
-		...applyMcpServers(selection.mcpServers ?? [], discovered, mcpPath),
+		...applySkills(selection.skills, discovered, skillsRoot),
+		...applyMcpServers(selection.mcpServers, discovered, mcpPath),
 	]
 
-	writeSkillPaths(mergeSkillPaths(configPath), configPath)
-	writeMigrationState("done", configPath)
+	const warnings: string[] | undefined = recordFinalWrites(configPath)
+	return warnings === undefined ? { results } : { results, warnings }
+}
 
-	return { results }
+/**
+ * The two completion writes (skill paths + migration marker) run after the
+ * items may already be on disk, so a failure must not reject the call and
+ * bury the per-item results — it is reported as a warning instead.
+ */
+function recordFinalWrites(configPath: string): string[] | undefined {
+	const warnings: string[] = []
+	const steps: Array<{ label: string; run: () => void }> = [
+		{ label: "persist skill paths", run: () => writeSkillPaths(mergeSkillPaths(configPath), configPath) },
+		{ label: "persist the migration marker", run: () => writeMigrationState("done", configPath) },
+	]
+	for (const step of steps) {
+		try {
+			step.run()
+		} catch (err) {
+			warnings.push(`Failed to ${step.label}: ${err instanceof Error ? err.message : String(err)}`)
+		}
+	}
+	return warnings.length > 0 ? warnings : undefined
 }
