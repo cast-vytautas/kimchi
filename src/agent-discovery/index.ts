@@ -19,6 +19,12 @@ export interface AgentDefinition {
 	 * are silently skipped; files that exist but fail to read or parse
 	 * emit a warning and the loop continues to the next path. Empty
 	 * array → no config to read.
+	 *
+	 * Invariant: entries must be home-level absolute paths — discovery has
+	 * no cwd parameter for configs, so a relative entry would silently
+	 * resolve against the ambient process working directory (and is dropped
+	 * with a warning under "home" scope). Use a `{ projectRelative }`
+	 * candidate on skillsDirs/commandsDirs for cwd-dependent locations.
 	 */
 	readonly configPaths: readonly string[]
 	/**

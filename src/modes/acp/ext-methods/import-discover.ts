@@ -87,9 +87,12 @@ export function importDiscover(definitions: readonly AgentDefinition[] = AGENT_D
 		const mcpServers = Object.entries(discovery.mcpServers)
 			.map(([name, entry]) => toImportDiscoverMcpServer(name, entry, discovery.id, discovery.displayName))
 			.filter((server) => server !== undefined)
-		// A source app with nothing importable is left out entirely, so a
-		// client never has to filter empty rows.
-		if (skills.length === 0 && mcpServers.length === 0) continue
+		// An app with nothing importable is left out entirely, so a client never
+		// has to filter empty rows — except when its skills directory contains
+		// skill-looking entries whose enumeration failed (skillCount > 0 but no
+		// readable skills). Report it with an empty payload so the client can
+		// distinguish "nothing here" from "couldn't read what is here".
+		if (skills.length === 0 && mcpServers.length === 0 && discovery.skillCount === 0) continue
 		apps.push({ id: discovery.id, displayName: discovery.displayName, skills, mcpServers })
 	}
 	return { apps }

@@ -71,7 +71,20 @@ export interface DiscoverAgentOptions {
 
 /** Resolve a candidate list to absolute directories against the given cwd. */
 export function resolveDirCandidates(candidates: readonly DirCandidate[], cwd: string): string[] {
-	return candidates.map((c) => (typeof c === "string" ? c : join(cwd, c.projectRelative)))
+	return candidates.map((c) => {
+		if (typeof c !== "string") return join(cwd, c.projectRelative)
+		if (!isAbsolute(c)) {
+			// Plain strings are a documented home-level-absolute convention. A
+			// relative one would silently resolve against the ambient cwd inside
+			// existsSync — cwd-dependent behaviour that survives even under the
+			// explicit `cwd` option and "home" scope. Flag it rather than
+			// resolving it implicitly.
+			console.warn(
+				`Non-absolute directory candidate "${c}" in agent discovery resolves against the current working directory; use an absolute path or a { projectRelative } candidate`,
+			)
+		}
+		return c
+	})
 }
 
 /** Drop project-relative candidates when discovery is scoped to home roots. */
@@ -111,7 +124,22 @@ export function discoverAgent(def: AgentDefinition, options?: DiscoverAgentOptio
 	const parse = def.parseConfig ?? JSON.parse
 	const mcpServers: Record<string, ServerEntry> = {}
 
-	for (const path of def.configPaths) {
+	// configPaths are a documented home-level-absolute convention (see
+	// AgentDefinition.configPaths). Under "home" scope a relative path would
+	// re-introduce exactly the cwd-dependent probe the scope exists to
+	// prevent, so drop it with a warning instead of reading it.
+	const configPaths =
+		scope === "home"
+			? def.configPaths.filter((path) => {
+					if (isAbsolute(path)) return true
+					console.warn(
+						`Skipping non-absolute config path "${path}" for ${def.displayName} in home-scoped discovery; config paths must be absolute`,
+					)
+					return false
+				})
+			: def.configPaths
+
+	for (const path of configPaths) {
 		let raw: string
 		try {
 			raw = readFileSync(path, "utf-8")

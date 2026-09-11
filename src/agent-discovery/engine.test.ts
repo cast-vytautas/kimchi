@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { ServerEntry } from "../extensions/mcp-adapter/types.js"
 import { hasBearerAuthorizationHeader, resolveDirCandidates, selectDirCandidates } from "./engine.js"
 import { discoverAgent } from "./index.js"
 import type { AgentDefinition, DirCandidate } from "./index.js"
@@ -550,12 +551,69 @@ describe("discoverAgent engine", () => {
 			expect(discoverAgent(def, { cwd: join(tempDir, "project") }).commandsDir).toBe(projectCommands)
 		})
 
+		// S8b: configPaths are home-level absolute by contract — under home scope a
+		// relative entry must be skipped, not probed against the ambient cwd.
+		it("S8b: home scope skips a non-absolute config path instead of probing it against the ambient cwd", () => {
+			// The entry is deliberately relative: written under tempDir, which the
+			// test chdirs into, so an ambient-cwd probe would find it.
+			const configName = "project-relative-config.json"
+			writeFileSync(join(tempDir, configName), JSON.stringify({ mcpServers: { probe: { command: "cmd" } } }), "utf-8")
+			const def: AgentDefinition = {
+				id: "probe-agent",
+				displayName: "Probe Agent",
+				configPaths: [configName],
+				skillsDirs: [],
+				commandsDirs: [],
+				extractServerSources: (parsed: unknown) => {
+					if (!parsed || typeof parsed !== "object") return []
+					const root = parsed as Record<string, unknown>
+					return root.mcpServers && typeof root.mcpServers === "object" && !Array.isArray(root.mcpServers)
+						? [root.mcpServers as Record<string, unknown>]
+						: []
+				},
+				transformServer: (raw: unknown) =>
+					raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as ServerEntry) : undefined,
+			}
+
+			const savedCwd = process.cwd()
+			process.chdir(tempDir)
+			try {
+				const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+				let home: ReturnType<typeof discoverAgent>
+				let all: ReturnType<typeof discoverAgent>
+				try {
+					home = discoverAgent(def, { scope: "home" })
+					all = discoverAgent(def, { scope: "all", cwd: tempDir })
+				} finally {
+					warnSpy.mockRestore()
+				}
+				expect(Object.keys(home.mcpServers)).toEqual([])
+				// The default (wizard) scope still reads it
+				expect(Object.keys(all.mcpServers)).toEqual(["probe"])
+			} finally {
+				process.chdir(savedCwd)
+			}
+		})
+
 		describe("resolveDirCandidates / selectDirCandidates", () => {
 			it("resolves plain strings through and project candidates against cwd", () => {
 				expect(resolveDirCandidates([join(tempDir, "x"), { projectRelative: join(".k", "skills") }], "/base")).toEqual([
 					join(tempDir, "x"),
 					join("/base", ".k", "skills"),
 				])
+			})
+
+			it("warns on a non-absolute plain-string candidate instead of silently depending on ambient cwd", () => {
+				const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+				try {
+					expect(resolveDirCandidates(["relative/dir", join(tempDir, "abs")], "/base")).toEqual([
+						"relative/dir",
+						join(tempDir, "abs"),
+					])
+					expect(warnSpy.mock.calls.some((call) => String(call[0]).includes("relative/dir"))).toBe(true)
+				} finally {
+					warnSpy.mockRestore()
+				}
 			})
 
 			it("home scope keeps only string candidates", () => {

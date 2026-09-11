@@ -160,6 +160,32 @@ describe("import_discover", () => {
 		])
 	})
 
+	it("keeps an app whose skills directory has entries that failed enumeration (skillCount > 0, skills empty)", () => {
+		const def = makeDef({ id: "failed-enum", displayName: "Failed Enum" })
+
+		// Simulate an enumeration failure: the skills directory exists and
+		// contains skill-looking entries (skillCount counts raw subdirectories),
+		// but the loader could not read any of them.
+		const spy = vi.spyOn(discoveryModule, "discoverAgent").mockReturnValue({
+			id: "failed-enum",
+			displayName: "Failed Enum",
+			mcpServers: {},
+			skillCount: 2,
+			skills: [],
+			skillsDir: "/tmp/failed-enum-skills",
+			commandsCount: 0,
+		})
+		try {
+			const result = importDiscover([def])
+			// Reported with an empty payload so the client can distinguish
+			// "nothing here" from "couldn't read what is here"
+			expect(result.apps.map((a) => a.id)).toEqual(["failed-enum"])
+			expect(result.apps[0].skills).toEqual([])
+		} finally {
+			spy.mockRestore()
+		}
+	})
+
 	it("reports MCP servers with command or URL, never env, headers or tokens", () => {
 		const config = join(tempDir, "config.json")
 		writeFileSync(
