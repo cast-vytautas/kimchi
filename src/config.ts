@@ -494,7 +494,7 @@ export function getAgentConfigDir(): string {
 	return AGENT_CONFIG_DIR
 }
 
-function writeConfigObject(configPath: string, raw: Record<string, unknown>): void {
+export function writeConfigObject(configPath: string, raw: Record<string, unknown>): void {
 	mkdirSync(dirname(configPath), { recursive: true })
 	const tmp = `${configPath}.${process.pid}.tmp`
 	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")

@@ -1,4 +1,4 @@
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { RequestError } from "@agentclientprotocol/sdk"
@@ -8,7 +8,7 @@ import {
 	type DiscoveredSkill,
 	discoverAgent,
 } from "../../../agent-discovery/index.js"
-import { ALWAYS_SHOWN_SKILL_PATHS, writeMigrationState, writeSkillPaths } from "../../../config.js"
+import { ALWAYS_SHOWN_SKILL_PATHS, writeConfigObject, writeMigrationState, writeSkillPaths } from "../../../config.js"
 import type { ServerEntry } from "../../../extensions/mcp-adapter/types.js"
 import { toSkillName } from "../../../setup-wizard.js"
 
@@ -136,22 +136,6 @@ function parseSelection<T extends { sourceAppId: string }>(
  * constant there.
  */
 const DEFAULT_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
-
-/**
- * Write a JSON object file atomically: mkdir the parent, write a same-dir tmp
- * file, rename it into place, and restrict the result to owner-only (0600) —
- * the harness mcp.json carries imported server env/headers in plaintext, and
- * the rename may inherit the tmp file's default umask perms, so chmod
- * explicitly after the rename lands. Same idiom config.ts uses for
- * config.json.
- */
-function writeJsonObjectFile(path: string, value: Record<string, unknown>): void {
-	mkdirSync(dirname(path), { recursive: true })
-	const tmp = `${path}.${process.pid}.tmp`
-	writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
-	renameSync(tmp, path)
-	chmodSync(path, 0o600)
-}
 
 /** Skill directory name for the destination: sanitized invocation name, with the source directory's own (already valid) name as a fallback. */
 function destinationDirName(skill: DiscoveredSkill): string {
@@ -301,7 +285,7 @@ function applyMcpServers(
 		const merged = { ...toAdd, ...existingServers }
 		existing.mcpServers = merged
 		try {
-			writeJsonObjectFile(mcpPath, existing)
+			writeConfigObject(mcpPath, existing)
 		} catch (err) {
 			// Partial outcomes are reported, not hidden: skills may already be on
 			// disk, so a failed MCP-config write must not reject the call. The
