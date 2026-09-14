@@ -8,7 +8,8 @@ import {
 	type DiscoveredSkill,
 	discoverAgent,
 } from "../../../agent-discovery/index.js"
-import { ALWAYS_SHOWN_SKILL_PATHS, writeConfigObject, writeMigrationState, writeSkillPaths } from "../../../config.js"
+import { writeJson } from "../../../config/json.js"
+import { ALWAYS_SHOWN_SKILL_PATHS, writeMigrationState, writeSkillPaths } from "../../../config.js"
 import type { ServerEntry } from "../../../extensions/mcp-adapter/types.js"
 import { toSkillName } from "../../../setup-wizard.js"
 
@@ -285,7 +286,7 @@ function applyMcpServers(
 		const merged = { ...toAdd, ...existingServers }
 		existing.mcpServers = merged
 		try {
-			writeConfigObject(mcpPath, existing)
+			writeJson(mcpPath, existing)
 		} catch (err) {
 			// Partial outcomes are reported, not hidden: skills may already be on
 			// disk, so a failed MCP-config write must not reject the call. The
