@@ -1,4 +1,5 @@
-import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs"
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { RequestError } from "@agentclientprotocol/sdk"
 import {
@@ -7,13 +8,7 @@ import {
 	type DiscoveredSkill,
 	discoverAgent,
 } from "../../../agent-discovery/index.js"
-import {
-	ALWAYS_SHOWN_SKILL_PATHS,
-	KIMCHI_CONFIG_PATH,
-	writeJsonObjectFile,
-	writeMigrationState,
-	writeSkillPaths,
-} from "../../../config.js"
+import { ALWAYS_SHOWN_SKILL_PATHS, writeMigrationState, writeSkillPaths } from "../../../config.js"
 import type { ServerEntry } from "../../../extensions/mcp-adapter/types.js"
 import { toSkillName } from "../../../setup-wizard.js"
 
@@ -135,6 +130,29 @@ function parseSelection<T extends { sourceAppId: string }>(
 	})
 }
 
+/**
+ * The shared harness config the wizard writes (`~/.config/kimchi/config.json`).
+ * Kept local rather than exported from config.ts; must stay in sync with the
+ * constant there.
+ */
+const DEFAULT_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
+
+/**
+ * Write a JSON object file atomically: mkdir the parent, write a same-dir tmp
+ * file, rename it into place, and restrict the result to owner-only (0600) —
+ * the harness mcp.json carries imported server env/headers in plaintext, and
+ * the rename may inherit the tmp file's default umask perms, so chmod
+ * explicitly after the rename lands. Same idiom config.ts uses for
+ * config.json.
+ */
+function writeJsonObjectFile(path: string, value: Record<string, unknown>): void {
+	mkdirSync(dirname(path), { recursive: true })
+	const tmp = `${path}.${process.pid}.tmp`
+	writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
+	renameSync(tmp, path)
+	chmodSync(path, 0o600)
+}
+
 /** Skill directory name for the destination: sanitized invocation name, with the source directory's own (already valid) name as a fallback. */
 function destinationDirName(skill: DiscoveredSkill): string {
 	const sanitized = toSkillName(skill.name)
@@ -165,7 +183,7 @@ function applySkills(
 				sourceAppId: sel.sourceAppId,
 				path: sel.path,
 				outcome: "skipped",
-				reason: "not found at apply time",
+				reason: "not_found_on_apply",
 			})
 			continue
 		}
@@ -182,7 +200,7 @@ function applySkills(
 				path: sel.path,
 				name: skill.name,
 				outcome: "skipped",
-				reason: "already installed",
+				reason: "already_installed",
 			})
 			continue
 		}
@@ -257,7 +275,7 @@ function applyMcpServers(
 				sourceAppId: sel.sourceAppId,
 				name: sel.name,
 				outcome: "skipped",
-				reason: "not found at apply time",
+				reason: "not_found_on_apply",
 			})
 			continue
 		}
@@ -269,7 +287,7 @@ function applyMcpServers(
 				sourceAppId: sel.sourceAppId,
 				name: sel.name,
 				outcome: "skipped",
-				reason: "already configured",
+				reason: "already_configured",
 			})
 			continue
 		}
@@ -348,7 +366,7 @@ export function handleImportApply(deps: ImportApplyDeps, params: Record<string, 
 
 	const skillsRoot = join(deps.agentDir, "skills")
 	const mcpPath = join(deps.agentDir, "mcp.json")
-	const configPath = deps.configPath ?? KIMCHI_CONFIG_PATH
+	const configPath = deps.configPath ?? DEFAULT_CONFIG_PATH
 
 	const warnings: string[] = []
 	const results = [

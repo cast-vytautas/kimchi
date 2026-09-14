@@ -14,7 +14,7 @@ const failCopy = vi.hoisted(() => ({ pattern: "" }))
 /** When true, the completion writes (skillPaths + migration marker) throw. */
 const failConfigWrite = vi.hoisted(() => ({ fail: false }))
 
-/** Path fragment that makes writeJsonObjectFile throw; set per-test, empty by default. */
+/** Path fragment that makes the mcp.json write (atomic rename) throw; set per-test, empty by default. */
 const failJsonWrite = vi.hoisted(() => ({ pattern: "" }))
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -24,6 +24,14 @@ vi.mock("node:fs", async (importOriginal) => {
 		cpSync: (src: string, dest: string, opts?: object) => {
 			if (failCopy.pattern && src.includes(failCopy.pattern)) throw new Error("simulated copy failure")
 			return actual.cpSync(src, dest, opts)
+		},
+		// import_apply's mcp.json write is atomic (tmp file + rename); failing
+		// the rename simulates the write failing without touching the test's
+		// own plain writeFileSync setup calls.
+		renameSync: (from: string, to: string) => {
+			if (failJsonWrite.pattern && from.includes(failJsonWrite.pattern))
+				throw new Error("simulated mcp config write failure")
+			return actual.renameSync(from, to)
 		},
 	}
 })
@@ -39,11 +47,6 @@ vi.mock("../../../config.js", async (importOriginal) => {
 		writeMigrationState: (state: Parameters<typeof actual.writeMigrationState>[0], configPath?: string) => {
 			if (failConfigWrite.fail) throw new Error("simulated config write failure")
 			return actual.writeMigrationState(state, configPath)
-		},
-		writeJsonObjectFile: (path: string, value: Record<string, unknown>) => {
-			if (failJsonWrite.pattern && path.includes(failJsonWrite.pattern))
-				throw new Error("simulated mcp config write failure")
-			return actual.writeJsonObjectFile(path, value)
 		},
 	}
 })
@@ -205,7 +208,7 @@ describe("import_apply", () => {
 				path: join(skillsDir, "deploy", "SKILL.md"),
 				name: "deploy",
 				outcome: "skipped",
-				reason: "already installed",
+				reason: "already_installed",
 			},
 		])
 		expect(snapshotTree(destDir)).toEqual(before)
@@ -226,7 +229,7 @@ describe("import_apply", () => {
 				// Identified by source app + path; the client already knows the
 				// name from discover, so none is echoed.
 				outcome: "skipped",
-				reason: "not found at apply time",
+				reason: "not_found_on_apply",
 			},
 		])
 		expect(existsSync(agentDir)).toBe(false)
@@ -312,7 +315,7 @@ describe("import_apply", () => {
 				sourceAppId: "claude-code",
 				name: "fetch",
 				outcome: "skipped",
-				reason: "already configured",
+				reason: "already_configured",
 			},
 		])
 		const mcpConfig = JSON.parse(readFileSync(mcpJson, "utf-8")) as { mcpServers: Record<string, ServerEntry> }
@@ -381,7 +384,7 @@ describe("import_apply", () => {
 				sourceAppId: "claude-code",
 				name: "broken",
 				outcome: "skipped",
-				reason: "not found at apply time",
+				reason: "not_found_on_apply",
 			},
 		])
 		expect(existsSync(join(agentDir, "mcp.json"))).toBe(false)
@@ -409,14 +412,14 @@ describe("import_apply", () => {
 				sourceAppId: "claude-code",
 				name: "empty",
 				outcome: "skipped",
-				reason: "not found at apply time",
+				reason: "not_found_on_apply",
 			},
 			{
 				kind: "mcpServer",
 				sourceAppId: "claude-code",
 				name: "blank",
 				outcome: "skipped",
-				reason: "not found at apply time",
+				reason: "not_found_on_apply",
 			},
 		])
 		expect(existsSync(join(agentDir, "mcp.json"))).toBe(false)
